@@ -1,0 +1,169 @@
+{
+  "name": "PulseMosaic-v1.1-Worker",
+  "nodes": [
+    {
+      "id": "b1-001",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "parameters": {}
+    },
+    {
+      "id": "b1-002",
+      "name": "Cache Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300],
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nconst topic = input.topic;\nconst config = input.config;\nconst endpoints = input.endpoints;\nconst st = $getWorkflowStaticData('global');\nif (!st.cache) st.cache = {};\nconst ttl = (config.cache_ttl_minutes || 30) * 60 * 1000;\nconst now = Date.now();\n\nif (st.cache[topic] && (now - st.cache[topic].ts < ttl)) {\n  return [{\n    json: {\n      cache_hit: true,\n      topic,\n      config,\n      endpoints,\n      cached_items: st.cache[topic].items || [],\n      cached_hits: st.cache[topic].items.length\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    cache_hit: false,\n    topic,\n    config,\n    endpoints,\n    cached_items: [],\n    cached_hits: 0\n  }\n}];"
+      }
+    },
+    {
+      "id": "b1-003",
+      "name": "IF Cache Hit",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [680, 300],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true },
+          "conditions": [
+            { "leftValue": "={{ $json.cache_hit }}", "rightValue": true, "operator": { "type": "boolean", "operation": "equals" } }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "b1-004",
+      "name": "Emit Cached Items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 200],
+      "parameters": {
+        "jsCode": "const data = $json;\nif (!data.cached_items || data.cached_items.length === 0) {\n  return [{ json: { __empty: true, __stream: 'cache', __meta: { cached_hits: 0, api_calls: 0, failed_calls: 0 } } }];\n}\nreturn data.cached_items.map(i => ({\n  json: { ...i, meta: { ...i.meta, cached: true }, __meta: { cached_hits: data.cached_items.length, api_calls: 0, failed_calls: 0 } }\n}));"
+      }
+    },
+    {
+      "id": "b1-005",
+      "name": "StackExchange",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 400],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Cache Gate').first().json.endpoints.stackoverflow + encodeURIComponent($('Cache Gate').first().json.topic) }}",
+        "options": { "continueOnFail": true }
+      }
+    },
+    {
+      "id": "b1-006",
+      "name": "Norm Stack",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 400],
+      "parameters": {
+        "jsCode": "const gate = $('Cache Gate').first().json;\nconst topic = gate.topic;\nconst data = $json;\n\nif (!data || !data.items || data.error) {\n  return [{ json: { __empty: true, __src: 'stackoverflow', __meta: { failed_calls: 1 } } }];\n}\n\nreturn data.items.map(i => ({\n  json: {\n    source: \"stackoverflow\",\n    topic,\n    title: i.title,\n    url: i.link,\n    published_at: new Date(i.creation_date * 1000).toISOString(),\n    raw_score: i.score || 0,\n    score: (i.score || 0) + (i.answer_count || 0),\n    summary_raw: i.body_markdown ? i.body_markdown.substring(0, 200) : null,\n    summary: null,\n    meta: { author: i.owner?.display_name, venue: \"Stack Overflow\", cached: false }\n  }\n}));"
+      }
+    },
+    {
+      "id": "b1-007",
+      "name": "GitHub",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 500],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Cache Gate').first().json.endpoints.github + encodeURIComponent($('Cache Gate').first().json.topic) }}",
+        "options": { "continueOnFail": true }
+      }
+    },
+    {
+      "id": "b1-008",
+      "name": "Norm GitHub",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 500],
+      "parameters": {
+        "jsCode": "const gate = $('Cache Gate').first().json;\nconst topic = gate.topic;\nconst data = $json;\n\nif (!data || !data.items || data.error) {\n  return [{ json: { __empty: true, __src: 'github', __meta: { failed_calls: 1 } } }];\n}\n\nreturn data.items.map(i => ({\n  json: {\n    source: \"github\",\n    topic,\n    title: i.name,\n    url: i.html_url,\n    published_at: i.updated_at,\n    raw_score: 0,\n    score: (i.stargazers_count || 0) + (i.forks_count || 0),\n    summary_raw: i.description,\n    summary: null,\n    meta: { author: i.owner?.login, venue: \"GitHub\", cached: false }\n  }\n}));"
+      }
+    },
+    {
+      "id": "b1-009",
+      "name": "arXiv",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 600],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Cache Gate').first().json.endpoints.arxiv + encodeURIComponent($('Cache Gate').first().json.topic) }}",
+        "options": { "response": { "response": { "responseFormat": "text" } }, "continueOnFail": true }
+      }
+    },
+    {
+      "id": "b1-010",
+      "name": "Norm arXiv",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 600],
+      "parameters": {
+        "jsCode": "const gate = $('Cache Gate').first().json;\nconst topic = gate.topic;\nconst xmlStr = $json;\n\nif (!xmlStr || xmlStr.error) {\n  return [{ json: { __empty: true, __src: 'arxiv', __meta: { failed_calls: 1 } } }];\n}\n\nconst entries = xmlStr.match(/<entry>[\\s\\S]*?<\\/entry>/g) || [];\nif (entries.length === 0) {\n  return [{ json: { __empty: true, __src: 'arxiv', __meta: { failed_calls: 0 } } }];\n}\n\nreturn entries.map(e => {\n  const title = (e.match(/<title>([\\s\\S]*?)<\\/title>/) || [])[1] || \"\";\n  const id = (e.match(/<id>([\\s\\S]*?)<\\/id>/) || [])[1] || \"\";\n  const summary = (e.match(/<summary>([\\s\\S]*?)<\\/summary>/) || [])[1] || \"\";\n  const published = (e.match(/<published>([\\s\\S]*?)<\\/published>/) || [])[1] || null;\n  return {\n    json: {\n      source: \"arxiv\",\n      topic,\n      title: title.replace(/\\n/g, ' ').trim(),\n      url: id,\n      published_at: published,\n      raw_score: 0,\n      score: 10,\n      summary_raw: summary.replace(/<[^>]+>/g, '').trim(),\n      summary: null,\n      meta: { author: null, venue: \"arXiv\", cached: false }\n    }\n  };\n});"
+      }
+    },
+    {
+      "id": "b1-011",
+      "name": "Merge 1",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [1340, 450],
+      "parameters": { "mode": "append" }
+    },
+    {
+      "id": "b1-012",
+      "name": "Merge 2",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [1560, 500],
+      "parameters": { "mode": "append" }
+    },
+    {
+      "id": "b1-013",
+      "name": "Cache Save",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1780, 500],
+      "parameters": {
+        "jsCode": "const gate = $('Cache Gate').first().json;\nconst topic = gate.topic;\nconst st = $getWorkflowStaticData('global');\nif (!st.cache) st.cache = {};\n\nconst allItems = $input.all();\nlet failedCalls = 0;\nconst validItems = allItems\n  .map(i => i.json)\n  .filter(i => {\n    if (i.__empty) {\n      if (i.__meta?.failed_calls) failedCalls += i.__meta.failed_calls;\n      else failedCalls++;\n      return false;\n    }\n    return true;\n  });\n\nst.cache[topic] = { ts: Date.now(), items: validItems };\n\nif (validItems.length === 0) {\n  return [{ json: { __empty: true, topic, __meta: { cached_hits: 0, api_calls: 3, failed_calls: failedCalls || 3 } } }];\n}\n\nreturn validItems.map(i => ({\n  json: { ...i, __meta: { cached_hits: 0, api_calls: 3, failed_calls: 0 } }\n}));"
+      }
+    },
+    {
+      "id": "b1-014",
+      "name": "Merge Output",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [1780, 300],
+      "parameters": { "mode": "append" }
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger": { "main": [[{ "node": "Cache Gate", "type": "main", "index": 0 }]] },
+    "Cache Gate": { "main": [[{ "node": "IF Cache Hit", "type": "main", "index": 0 }]] },
+    "IF Cache Hit": {
+      "main": [
+        [{ "node": "Emit Cached Items", "type": "main", "index": 0 }],
+        [{ "node": "StackExchange", "type": "main", "index": 0 }, { "node": "GitHub", "type": "main", "index": 0 }, { "node": "arXiv", "type": "main", "index": 0 }]
+      ]
+    },
+    "Emit Cached Items": { "main": [[{ "node": "Merge Output", "type": "main", "index": 0 }]] },
+    "StackExchange": { "main": [[{ "node": "Norm Stack", "type": "main", "index": 0 }]] },
+    "Norm Stack": { "main": [[{ "node": "Merge 1", "type": "main", "index": 0 }]] },
+    "GitHub": { "main": [[{ "node": "Norm GitHub", "type": "main", "index": 0 }]] },
+    "Norm GitHub": { "main": [[{ "node": "Merge 1", "type": "main", "index": 1 }]] },
+    "arXiv": { "main": [[{ "node": "Norm arXiv", "type": "main", "index": 0 }]] },
+    "Norm arXiv": { "main": [[{ "node": "Merge 2", "type": "main", "index": 1 }]] },
+    "Merge 1": { "main": [[{ "node": "Merge 2", "type": "main", "index": 0 }]] },
+    "Merge 2": { "main": [[{ "node": "Cache Save", "type": "main", "index": 0 }]] },
+    "Cache Save": { "main": [[{ "node": "Merge Output", "type": "main", "index": 1 }]] }
+  }
+}

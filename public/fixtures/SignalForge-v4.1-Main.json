@@ -1,0 +1,228 @@
+{
+  "name": "SignalForge-v4.1-Main",
+  "nodes": [
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000001",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "parameters": {}
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000002",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [60, 300],
+      "parameters": {
+        "rule": { "interval": [{ "field": "hours", "hoursInterval": 2 }] }
+      }
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000003",
+      "name": "Init",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 300],
+      "parameters": {
+        "jsCode": "const rss_urls = [\n  'https://feeds.bbci.co.uk/news/technology/rss.xml',\n  'https://www.nasa.gov/rss/dyn/breaking_news.rss'\n];\nconst keywords = ['openai', 'anthropic', 'n8n', 'postgres', 'embeddings'];\nconst config = {\n  dedupe_ttl_days: 7,\n  cache_ttl_minutes: 30,\n  min_score: 10,\n  max_items_total: 25,\n  enable_llm_summary: true,\n  ZAI_API_KEY: $env.ZAI_API_KEY || '',\n  ZAI_BASE_URL: $env.ZAI_BASE_URL || 'https://api.z.ai/api/paas/v4',\n  ZAI_MODEL: $env.ZAI_MODEL || 'glm-5'\n};\nreturn [{ json: { rss_urls, keywords, config } }];"
+      }
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000004",
+      "name": "Split Out URLs",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [640, 200],
+      "parameters": {
+        "fieldToSplitOut": "rss_urls",
+        "destinationFieldName": "rss_url",
+        "options": {}
+      }
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000005",
+      "name": "RSS Feed Read",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1,
+      "position": [840, 200],
+      "parameters": {
+        "url": "={{ $json.rss_url }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000006",
+      "name": "Normalize RSS",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1040, 200],
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst config = $('Init').first().json.config;\nconst out = [];\n\nfor (const item of items) {\n  const feedUrl = item.json.rss_url;\n  const feedData = item.json;\n  const entries = feedData.items || [];\n  \n  for (const entry of entries) {\n    out.push({\n      json: {\n        source: 'rss',\n        keyword: null,\n        title: entry.title || 'Untitled',\n        url: entry.link || entry.guid || '',\n        published_at: entry.pubDate || entry.isoDate || null,\n        raw_score: 15,\n        score: 15,\n        summary_raw: entry.contentSnippet || entry.summary || null,\n        summary: null,\n        meta: {\n          author: entry.creator || null,\n          venue: feedUrl ? new URL(feedUrl).hostname : 'RSS Feed',\n          cached: false,\n          api_calls: 0,\n          failed_calls: 0\n        }\n      }\n    });\n  }\n}\nreturn out.length > 0 ? out : [{ json: { __empty: true, __stream: 'rss' } }];"
+      }
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000007",
+      "name": "Split Out Keywords",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [640, 400],
+      "parameters": {
+        "fieldToSplitOut": "keywords",
+        "destinationFieldName": "keyword",
+        "options": {}
+      }
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000008",
+      "name": "Prepare Worker Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [840, 400],
+      "parameters": {
+        "jsCode": "const init = $('Init').first().json;\nreturn [{\n  json: {\n    keyword: $json.keyword,\n    config: init.config\n  }\n}];"
+      }
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000009",
+      "name": "Execute Keyword Worker",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [1040, 400],
+      "parameters": {
+        "workflowId": "SignalForge-v4.1-KeywordWorker",
+        "options": {}
+      }
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000010",
+      "name": "Merge Streams",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [1240, 300],
+      "parameters": {
+        "mode": "append",
+        "options": {}
+      }
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000011",
+      "name": "Finalize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1440, 300],
+      "parameters": {
+        "jsCode": "const allItems = $input.all();\nconst initData = $('Init').first().json;\nconst config = initData.config;\nconst keywords = initData.keywords;\nconst staticData = $getWorkflowStaticData('global');\n\nif (!staticData.seen) staticData.seen = {};\nconst now = Date.now();\nconst ttlMs = config.dedupe_ttl_days * 24 * 60 * 60 * 1000;\n\n// Prune TTL\nfor (const key of Object.keys(staticData.seen)) {\n  if (now - staticData.seen[key] > ttlMs) delete staticData.seen[key];\n}\n\nconst validItems = allItems.map(i => i.json).filter(i => !i.__empty);\nconst candidatesTotal = validItems.length;\nconst stats = { cached_hits: 0, api_calls: 0, failed_calls: 0, by_source: {} };\nconst finalItems = [];\n\nfor (const item of validItems) {\n  stats.by_source[item.source] = (stats.by_source[item.source] || 0) + 1;\n  if (item.meta?.cached) stats.cached_hits++;\n  if (item.meta?.api_calls) stats.api_calls += item.meta.api_calls;\n  if (item.meta?.failed_calls) stats.failed_calls += item.meta.failed_calls;\n  \n  const id = item.url || item.title;\n  if (id && !staticData.seen[id]) {\n    staticData.seen[id] = now;\n    if (item.score >= config.min_score) finalItems.push(item);\n  }\n}\n\nfinalItems.sort((a, b) => b.score - a.score);\nconst sliced = finalItems.slice(0, config.max_items_total);\n\nreturn [{\n  json: {\n    config,\n    stats: { candidates_total: candidatesTotal, new_items: finalItems.length, ...stats },\n    items: sliced,\n    keywords,\n    run_id: $execution.id,\n    generated_at: new Date().toISOString()\n  }\n}];"
+      }
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000012",
+      "name": "Check LLM",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1640, 300],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true },
+          "conditions": [
+            { "leftValue": "={{ $json.config.enable_llm_summary }}", "rightValue": true, "operator": { "type": "boolean", "operation": "equals" } },
+            { "leftValue": "={{ $json.config.ZAI_API_KEY }}", "rightValue": "", "operator": { "type": "string", "operation": "isNotEmpty" } }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000013",
+      "name": "Prepare LLM",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1840, 200],
+      "parameters": {
+        "jsCode": "const data = $json;\nconst top10 = data.items.slice(0, 10);\nconst promptContext = top10.map(i => `URL: ${i.url}\\nTitle: ${i.title}`).join('\\n\\n');\n\nreturn [{\n  json: {\n    config: data.config,\n    items: data.items,\n    stats: data.stats,\n    keywords: data.keywords,\n    run_id: data.run_id,\n    generated_at: data.generated_at,\n    llm_payload: {\n      model: data.config.ZAI_MODEL,\n      messages: [{\n        role: 'user',\n        content: `Generate a 1-sentence summary for each item. Return JSON: {\"summaries\":[{\"url\":\"...\",\"summary\":\"...\"}]}\\n\\n${promptContext}`\n      }],\n      response_format: { type: 'json_object' }\n    }\n  }\n}];"
+      }
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000014",
+      "name": "Call LLM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2040, 200],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.config.ZAI_BASE_URL + '/chat/completions' }}",
+        "authentication": "none",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.llm_payload }}",
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $json.config.ZAI_API_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "options": { "continueOnFail": true }
+      }
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000015",
+      "name": "Apply Summaries",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2240, 200],
+      "parameters": {
+        "jsCode": "const prev = $('Prepare LLM').item.json;\nlet items = prev.items;\nconst response = $json;\n\nif (response?.choices?.[0]?.message?.content) {\n  try {\n    const parsed = JSON.parse(response.choices[0].message.content);\n    if (parsed.summaries && Array.isArray(parsed.summaries)) {\n      const map = {};\n      parsed.summaries.forEach(s => map[s.url] = s.summary);\n      items = items.map(i => ({ ...i, summary: map[i.url] || i.summary_raw || i.title }));\n    }\n  } catch (e) {\n    items = items.map(i => ({ ...i, summary: i.summary_raw || i.title }));\n  }\n} else {\n  items = items.map(i => ({ ...i, summary: i.summary_raw || i.title }));\n}\n\nreturn [{ json: { ...prev, items } }];"
+      }
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000016",
+      "name": "Fallback Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1840, 400],
+      "parameters": {
+        "jsCode": "const data = $json;\nconst items = data.items.map(i => ({ ...i, summary: i.summary_raw || i.title }));\nreturn [{ json: { ...data, items } }];"
+      }
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000017",
+      "name": "QA Lint",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2440, 300],
+      "parameters": {
+        "jsCode": "const data = $json;\nif (!Array.isArray(data.items)) throw new Error('QA: items not array');\ndata.items.forEach(i => {\n  if (!i.url) throw new Error('QA: item missing url');\n  if (typeof i.score !== 'number') throw new Error('QA: score not number');\n});\nconst str = JSON.stringify(data);\nif (str.includes('{{')) throw new Error('QA: mustache detected');\nreturn [{ json: data }];"
+      }
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000018",
+      "name": "Build Final",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2640, 300],
+      "parameters": {
+        "jsCode": "const data = $json;\nconst digest = data.items.map(i => `* [${i.score}] ${i.title}\\n  ${i.url}\\n  ${i.summary || 'No summary'}`).join('\\n\\n');\nreturn [{\n  json: {\n    run_id: data.run_id,\n    generated_at: data.generated_at,\n    keywords: data.keywords,\n    stats: data.stats,\n    items: data.items,\n    digest_markdown: digest\n  }\n}];"
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": { "main": [[{"node": "Init", "type": "main", "index": 0}]] },
+    "Schedule Trigger": { "main": [[{"node": "Init", "type": "main", "index": 0}]] },
+    "Init": { "main": [[{"node": "Split Out URLs", "type": "main", "index": 0}, {"node": "Split Out Keywords", "type": "main", "index": 0}]] },
+    "Split Out URLs": { "main": [[{"node": "RSS Feed Read", "type": "main", "index": 0}]] },
+    "RSS Feed Read": { "main": [[{"node": "Normalize RSS", "type": "main", "index": 0}]] },
+    "Normalize RSS": { "main": [[{"node": "Merge Streams", "type": "main", "index": 0}]] },
+    "Split Out Keywords": { "main": [[{"node": "Prepare Worker Input", "type": "main", "index": 0}]] },
+    "Prepare Worker Input": { "main": [[{"node": "Execute Keyword Worker", "type": "main", "index": 0}]] },
+    "Execute Keyword Worker": { "main": [[{"node": "Merge Streams", "type": "main", "index": 1}]] },
+    "Merge Streams": { "main": [[{"node": "Finalize", "type": "main", "index": 0}]] },
+    "Finalize": { "main": [[{"node": "Check LLM", "type": "main", "index": 0}]] },
+    "Check LLM": { "main": [[{"node": "Prepare LLM", "type": "main", "index": 0}], [{"node": "Fallback Summary", "type": "main", "index": 0}]] },
+    "Prepare LLM": { "main": [[{"node": "Call LLM", "type": "main", "index": 0}]] },
+    "Call LLM": { "main": [[{"node": "Apply Summaries", "type": "main", "index": 0}]] },
+    "Apply Summaries": { "main": [[{"node": "QA Lint", "type": "main", "index": 0}]] },
+    "Fallback Summary": { "main": [[{"node": "QA Lint", "type": "main", "index": 0}]] },
+    "QA Lint": { "main": [[{"node": "Build Final", "type": "main", "index": 0}]] }
+  }
+}

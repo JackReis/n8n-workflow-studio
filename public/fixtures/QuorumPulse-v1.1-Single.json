@@ -1,0 +1,444 @@
+{
+  "name": "QuorumPulse-v1.1-Single",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "b1a2b3c4-1234-5678-9abc-def012345678",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{"field": "hours", "hoursInterval": 6}]
+        }
+      },
+      "id": "c1d2e3f4-1234-5678-9abc-def012345679",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 420]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Init Inputs and Global Telemetry\nconst rss_feeds = [\n  \"https://hnrss.org/frontpage\",\n  \"https://www.nasa.gov/rss/dyn/breaking_news.rss\"\n];\nconst topics = [\n  \"agentic workflows\",\n  \"mcp protocol\",\n  \"vector databases\",\n  \"prompt injection\",\n  \"postgres embeddings\"\n];\nconst config = {\n  cache_ttl_minutes: 60,\n  dedupe_ttl_days: 14,\n  min_score: 8,\n  max_items_total: 35,\n  max_per_source: 12,\n  max_per_topic: 6,\n  enable_llm_summary: true,\n  retry_max: 2,\n  retry_backoff_ms: 800,\n  timeout_ms: 12000,\n  ZAI_API_KEY: $env.ZAI_API_KEY || \"\",\n  ZAI_BASE_URL: $env.ZAI_BASE_URL || \"https://api.z.ai/api/paas/v4\",\n  ZAI_MODEL: $env.ZAI_MODEL || \"glm-5\"\n};\n\n// Init Telemetry\nconst st = $getWorkflowStaticData('global');\nst.runs = (st.runs || 0) + 1;\n\nreturn [{ json: { rss_feeds, topics, config } }];"
+      },
+      "id": "d1e2f3a4-1234-5678-9abc-def01234567a",
+      "name": "Init",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 360]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "rss_feeds",
+        "destinationFieldName": "rss_url",
+        "options": {}
+      },
+      "id": "e1f2a3b4-1234-5678-9abc-def01234567b",
+      "name": "Split Out RSS",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [660, 240]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.rss_url }}",
+        "options": {}
+      },
+      "id": "f2a3b4c5-1234-5678-9abc-def01234567c",
+      "name": "RSS Feed Read",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1,
+      "position": [880, 240]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize RSS Items - rssFeedRead outputs items directly\nconst items = $input.all();\nconst out = [];\n\nfor(const item of items) {\n  const feedUrl = item.json.rss_url;\n  // rssFeedRead returns items array directly in item.json\n  const entries = Array.isArray(item.json) ? item.json : (item.json.items || []);\n  \n  for(const entry of entries) {\n    const title = entry?.title || \"Untitled\";\n    const url = entry?.link || entry?.url || entry?.guid || \"\";\n    if(!url) continue;\n    \n    out.push({\n      json: {\n        source: \"rss\",\n        topic: null,\n        title,\n        url,\n        published_at: entry?.pubDate || entry?.isoDate || entry?.published || null,\n        raw_score: 5,\n        score: 5,\n        summary_raw: entry?.contentSnippet || entry?.description || entry?.summary || null,\n        summary: null,\n        meta: {\n          author: entry?.creator || entry?.author || null,\n          venue: feedUrl ? new URL(feedUrl).hostname : 'rss',\n          cached: false,\n          http_status: null\n        }\n      }\n    });\n  }\n}\n\nif (out.length === 0) {\n  return [{ json: { __empty: true, __stream: 'rss' } }];\n}\nreturn out;"
+      },
+      "id": "a3b4c5d6-1234-5678-9abc-def01234567d",
+      "name": "Normalize RSS",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 240]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "topics",
+        "destinationFieldName": "topic",
+        "options": {}
+      },
+      "id": "b4c5d6e7-1234-5678-9abc-def01234567e",
+      "name": "Split Out Topics",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [660, 480]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Cache Gate Logic\nconst item = $input.first();\nconst topic = item.json.topic;\nconst config = $('Init').first().json.config;\nconst st = $getWorkflowStaticData('global');\n\nif(!st.cache) st.cache = {};\nconst now = Date.now();\nconst ttl = config.cache_ttl_minutes * 60 * 1000;\n\n// Prune old cache entries\nfor(const k in st.cache) {\n  if(now - st.cache[k].ts_epoch_ms > ttl) delete st.cache[k];\n}\n\nconst cached = st.cache[topic];\nif(cached && (now - cached.ts_epoch_ms <= ttl)) {\n  return [{ json: { topic, config, cache_hit: true, cached_items: cached.items || [] } }];\n}\n\nreturn [{ json: { topic, config, cache_hit: false } }];"
+      },
+      "id": "c5d6e7f8-1234-5678-9abc-def01234567f",
+      "name": "Cache Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 480]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json.cache_hit }}", "rightValue": true, "operator": { "type": "boolean", "operation": "equals" } }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "d6e7f8a9-1234-5678-9abc-def012345680",
+      "name": "IF Cache Hit",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1100, 480]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst items = data.cached_items || [];\n\nif (items.length === 0) {\n  return [{ json: { __empty: true, __stream: 'cache', __meta: { cached_hits: 0 } } }];\n}\n\nreturn items.map(i => ({\n  json: { ...i, meta: { ...i.meta, cached: true }, __meta: { cached_hits: items.length } }\n}));"
+      },
+      "id": "e7f8a9b0-1234-5678-9abc-def012345681",
+      "name": "Emit Cached Items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1320, 400]
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://hn.algolia.com/api/v1/search?query=' + encodeURIComponent($('Cache Gate').first().json.topic) + '&tags=story&hitsPerPage=5' }}",
+        "headerParameters": {
+          "parameters": [
+            { "name": "Accept", "value": "application/json" }
+          ]
+        },
+        "options": {
+          "timeout": 12000,
+          "response": { "response": { "responseFormat": "json", "neverError": true } }
+        }
+      },
+      "id": "f8a9b0c1-1234-5678-9abc-def012345682",
+      "name": "Fetch HN",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1320, 560]
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://api.github.com/search/repositories?q=' + encodeURIComponent($('Cache Gate').first().json.topic) + '&sort=updated&order=desc&per_page=5' }}",
+        "headerParameters": {
+          "parameters": [
+            { "name": "Accept", "value": "application/vnd.github+json" },
+            { "name": "User-Agent", "value": "n8n-quorumpulse" }
+          ]
+        },
+        "options": {
+          "timeout": 12000,
+          "response": { "response": { "responseFormat": "json", "neverError": true } }
+        }
+      },
+      "id": "a9b0c1d2-1234-5678-9abc-def012345683",
+      "name": "Fetch GitHub",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1320, 680]
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://api.crossref.org/works?query=' + encodeURIComponent($('Cache Gate').first().json.topic) + '&rows=5' }}",
+        "options": {
+          "timeout": 12000,
+          "response": { "response": { "responseFormat": "json", "neverError": true } }
+        }
+      },
+      "id": "b0c1d2e3-1234-5678-9abc-def012345684",
+      "name": "Fetch Crossref",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1320, 800]
+    },
+    {
+      "parameters": {
+        "jsCode": "const topic = $('Cache Gate').first().json.topic;\nconst data = $input.first().json;\nconst hits = data?.hits || [];\n\nif (!hits || hits.length === 0) {\n  return [{ json: { __empty: true, __src: 'hn', __meta: { failed_calls: data ? 0 : 1 } } }];\n}\n\nreturn hits.map(h => ({\n  json: {\n    source: \"hn\",\n    topic,\n    title: h.title || \"Untitled\",\n    url: h.url || `https://news.ycombinator.com/item?id=${h.objectID}`,\n    published_at: h.created_at ? new Date(h.created_at).toISOString() : null,\n    raw_score: (h.points || 0) + (h.num_comments || 0),\n    score: (h.points || 0) + (h.num_comments || 0),\n    summary_raw: null,\n    summary: null,\n    meta: { author: h.author || null, venue: \"HackerNews\", cached: false, http_status: null }\n  }\n}));"
+      },
+      "id": "d2e3f4a5-1234-5678-9abc-def012345686",
+      "name": "Normalize HN",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1540, 560]
+    },
+    {
+      "parameters": {
+        "jsCode": "const topic = $('Cache Gate').first().json.topic;\nconst data = $input.first().json;\nconst items = data?.items || [];\n\nif (!items || items.length === 0) {\n  return [{ json: { __empty: true, __src: 'github', __meta: { failed_calls: data ? 0 : 1 } } }];\n}\n\nreturn items.map(i => ({\n  json: {\n    source: \"github\",\n    topic,\n    title: i.full_name || i.name || \"Untitled\",\n    url: i.html_url || \"\",\n    published_at: i.updated_at || null,\n    raw_score: (i.stargazers_count||0) + (i.forks_count||0),\n    score: (i.stargazers_count||0) + (i.forks_count||0),\n    summary_raw: i.description || null,\n    summary: null,\n    meta: { author: i.owner?.login || null, venue: \"GitHub\", cached: false, http_status: null }\n  }\n}));"
+      },
+      "id": "e3f4a5b6-1234-5678-9abc-def012345687",
+      "name": "Normalize GitHub",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1540, 680]
+    },
+    {
+      "parameters": {
+        "jsCode": "const topic = $('Cache Gate').first().json.topic;\nconst data = $input.first().json;\nconst items = data?.message?.items || [];\n\nif (!items || items.length === 0) {\n  return [{ json: { __empty: true, __src: 'crossref', __meta: { failed_calls: data ? 0 : 1 } } }];\n}\n\nreturn items.map(i => {\n  const title = (i.title && i.title[0]) || \"Untitled\";\n  const url = i.URL || (i.DOI ? `https://doi.org/${i.DOI}` : \"\");\n  return {\n    json: {\n      source: \"crossref\",\n      topic,\n      title,\n      url,\n      published_at: i.published?.['date-parts']?.[0]?.join('-') || null,\n      raw_score: 20 + (i['is-referenced-by-count']||0),\n      score: 20 + (i['is-referenced-by-count']||0),\n      summary_raw: i.abstract || i.subtitle || null,\n      summary: null,\n      meta: { author: null, venue: i['container-title']?.[0] || \"Crossref\", cached: false, http_status: null }\n    }\n  };\n});"
+      },
+      "id": "f4a5b6c7-1234-5678-9abc-def012345688",
+      "name": "Normalize Crossref",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1540, 800]
+    },
+    {
+      "parameters": {
+        "mode": "append"
+      },
+      "id": "a5b6c7d8-1234-5678-9abc-def012345689",
+      "name": "Merge HN+GitHub",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1760, 620]
+    },
+    {
+      "parameters": {
+        "mode": "append"
+      },
+      "id": "b6c7d8e9-1234-5678-9abc-def01234568a",
+      "name": "Merge (prev)+Crossref",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1980, 680]
+    },
+    {
+      "parameters": {
+        "jsCode": "const allInputs = $input.all();\nconst topic = $('Cache Gate').first().json.topic;\nconst st = $getWorkflowStaticData('global');\n\nif(!st.cache) st.cache = {};\n\n// Collect valid items (skip __empty markers)\nlet failedCalls = 0;\nconst validItems = [];\n\nfor (const item of allInputs) {\n  const i = item.json;\n  if (i.__empty) {\n    if (i.__meta?.failed_calls) failedCalls += i.__meta.failed_calls;\n    continue;\n  }\n  validItems.push(i);\n}\n\n// Save to cache (even if empty)\nst.cache[topic] = { ts_epoch_ms: Date.now(), items: validItems };\n\nif (validItems.length === 0) {\n  return [{ json: { __empty: true, topic, __meta: { api_calls: 3, failed_calls: failedCalls || 3 } } }];\n}\n\nreturn validItems.map(i => ({ json: { ...i, __meta: { api_calls: 3, failed_calls: 0 } } }));"
+      },
+      "id": "c7d8e9f0-1234-5678-9abc-def01234568b",
+      "name": "Cache Save",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2200, 600]
+    },
+    {
+      "parameters": {
+        "mode": "append"
+      },
+      "id": "d8e9f0a1-1234-5678-9abc-def01234568c",
+      "name": "Topic Output Join",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [2420, 500]
+    },
+    {
+      "parameters": {
+        "mode": "append"
+      },
+      "id": "e9f0a1b2-1234-5678-9abc-def01234568d",
+      "name": "Merge All Streams",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [2640, 370]
+    },
+    {
+      "parameters": {
+        "jsCode": "const init = $('Init').first().json;\nconst config = init.config;\nconst st = $getWorkflowStaticData('global');\nif(!st.seen) st.seen = {};\n\nconst now = Date.now();\nconst dedupeTtl = config.dedupe_ttl_days * 24 * 60 * 60 * 1000;\n\n// Prune seen\nfor(const k in st.seen) {\n  if(now - st.seen[k] > dedupeTtl) delete st.seen[k];\n}\n\n// Collect all items and count cache misses\nlet candidates = 0;\nlet cachedHits = 0;\nlet apiCalls = 0;\nlet failedCalls = 0;\nconst allItems = [];\n\nfor (const item of $input.all()) {\n  const i = item.json;\n  \n  // Skip empty markers but extract stats\n  if (i.__empty) {\n    if (i.__meta?.failed_calls) failedCalls += i.__meta.failed_calls;\n    continue;\n  }\n  \n  candidates++;\n  \n  // Count cached hits\n  if (i.meta?.cached) cachedHits++;\n  \n  // Count API calls from metadata\n  if (i.__meta?.api_calls) apiCalls += i.__meta.api_calls;\n  if (i.__meta?.failed_calls) failedCalls += i.__meta.failed_calls;\n  \n  allItems.push(i);\n}\n\n// Dedupe\nconst seen = [];\nfor (const i of allItems) {\n  if(!i.url) continue;\n  if(st.seen[i.url]) continue;\n  st.seen[i.url] = now;\n  seen.push(i);\n}\n\n// Filter Score\nconst filtered = seen.filter(i => i.score >= config.min_score);\n\n// Sort by score first (best items survive caps)\nfiltered.sort((a,b) => b.score - a.score);\n\n// Diversity Caps (check BEFORE incrementing)\nconst sourceCounts = {};\nconst topicCounts = {};\nconst capped = [];\n\nfor (const i of filtered) {\n  const s = i.source || 'unknown';\n  const t = i.topic || 'null';\n  \n  // Check caps first\n  if((sourceCounts[s] || 0) >= config.max_per_source) continue;\n  if((topicCounts[t] || 0) >= config.max_per_topic) continue;\n  \n  // Then increment\n  sourceCounts[s] = (sourceCounts[s] || 0) + 1;\n  topicCounts[t] = (topicCounts[t] || 0) + 1;\n  capped.push(i);\n}\n\n// Final slice\nconst items = capped.slice(0, config.max_items_total);\n\n// Stats\nconst stats = {\n  candidates_total: candidates,\n  new_items: items.length,\n  cached_hits: cachedHits,\n  api_calls: apiCalls,\n  failed_calls: failedCalls,\n  by_source: items.reduce((acc, i) => { acc[i.source] = (acc[i.source]||0)+1; return acc; }, {})\n};\n\nreturn [{ json: { config, topics: init.topics, stats, items, run_id: st.runs, generated_at: new Date().toISOString() } }];"
+      },
+      "id": "f0a1b2c3-1234-5678-9abc-def01234568e",
+      "name": "Finalize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2860, 370]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json.config.enable_llm_summary }}", "rightValue": true, "operator": { "type": "boolean", "operation": "equals" } },
+            { "leftValue": "={{ $json.config.ZAI_API_KEY }}", "rightValue": "", "operator": { "type": "string", "operation": "isNotEmpty" } }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-1234-5678-9abc-def01234568f",
+      "name": "IF LLM",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [3080, 370]
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx = $input.first().json;\nconst top12 = (ctx.items || []).slice(0, 12).map(i => `URL: ${i.url}\\nTitle: ${i.title}\\nScore: ${i.score}`).join('\\n\\n');\nconst prompt = `Generate a 1 sentence summary for each of the following items. Return STRICT JSON:\\n{\"summaries\":[{\"url\":\"...\",\"summary\":\"1 sentence\"}]}\\n\\nItems:\\n${top12}`;\nreturn [{ json: {\n  // Preserve base data\n  __baseData: {\n    config: ctx.config,\n    topics: ctx.topics,\n    stats: ctx.stats,\n    run_id: ctx.run_id,\n    generated_at: ctx.generated_at,\n    items: ctx.items\n  },\n  config: ctx.config,\n  llm_body: { messages: [{ role: 'user', content: prompt }] }\n} }];"
+      },
+      "id": "b2c3d4e5-1234-5678-9abc-def012345690",
+      "name": "Prepare LLM",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3300, 280]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.config.ZAI_BASE_URL + '/chat/completions' }}",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $json.config.ZAI_API_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $json.config.ZAI_MODEL, messages: $json.llm_body.messages, response_format: {type:'json_object'}, temperature: 0.2 }) }}",
+        "options": {
+          "response": { "response": { "responseFormat": "json", "neverError": true } }
+        }
+      },
+      "id": "c3d4e5f6-1234-5678-9abc-def012345691",
+      "name": "LLM HTTP",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3520, 280]
+    },
+    {
+      "parameters": {
+        "jsCode": "// CRITICAL: Read base data from Prepare LLM (not from HTTP response)\nconst prepNode = $('Prepare LLM').first().json;\nconst baseData = prepNode.__baseData || prepNode;\nconst resp = $input.first().json;\n\nlet summaryMap = {};\n\ntry {\n  let content = resp?.choices?.[0]?.message?.content;\n  if(content) {\n    const parsed = JSON.parse(content);\n    // Support both formats: {summaries:[]} and {\"url\":\"summary\"}\n    if (Array.isArray(parsed.summaries)) {\n      parsed.summaries.forEach(s => { if(s.url && s.summary) summaryMap[s.url] = s.summary; });\n    } else if (typeof parsed === 'object') {\n      for (const [url, summary] of Object.entries(parsed)) {\n        if (typeof summary === 'string') summaryMap[url] = summary;\n      }\n    }\n  }\n} catch(e) { console.error('LLM parse error:', e); }\n\nconst items = (baseData.items || []).map(i => ({\n  ...i,\n  summary: summaryMap[i.url] || i.summary_raw || i.title\n}));\n\nreturn [{ json: {\n  config: baseData.config,\n  topics: baseData.topics,\n  stats: baseData.stats,\n  run_id: baseData.run_id,\n  generated_at: baseData.generated_at,\n  items\n} }];"
+      },
+      "id": "d4e5f6a7-1234-5678-9abc-def012345692",
+      "name": "Apply Summaries",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3740, 280]
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx = $input.first().json;\nconst items = (ctx.items || []).map(i => ({\n  ...i,\n  summary: i.summary_raw || i.title\n}));\nreturn [{ json: { ...ctx, items } }];"
+      },
+      "id": "e5f6a7b8-1234-5678-9abc-def012345693",
+      "name": "Fallback Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3300, 460]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\n// QA Checks\nif(!data.items || !Array.isArray(data.items)) throw new Error('Invalid items');\nfor(const i of data.items) {\n  if(typeof i.url !== 'string' || i.url === '') throw new Error('Empty URL');\n  if(typeof i.score !== 'number') throw new Error('Invalid score');\n}\nconst str = JSON.stringify(data);\nif(str.includes('{{')) throw new Error('Contains {{');\nreturn [{ json: data }];"
+      },
+      "id": "f6a7b8c9-1234-5678-9abc-def012345694",
+      "name": "QA Lint",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3960, 370]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst bySource = {};\n(data.items || []).forEach(i => {\n  if(!bySource[i.source]) bySource[i.source] = [];\n  bySource[i.source].push(i);\n});\n\nlet md = `# QuorumPulse Signal Pack\\n\\n`;\nmd += `**Generated:** ${data.generated_at}\\n`;\nmd += `**Stats:** ${data.stats?.new_items || 0} items, ${data.stats?.cached_hits || 0} cached, ${data.stats?.api_calls || 0} API calls\\n\\n`;\n\nfor(const [src, items] of Object.entries(bySource)) {\n  md += `## ${src.toUpperCase()}\\n`;\n  items.forEach(i => {\n    md += `- [${i.score}] ${i.title}\\n  > ${i.summary || 'No summary'}\\n  Link: ${i.url}\\n`;\n  });\n  md += `\\n`;\n}\n\nreturn [{ json: { ...data, digest_markdown: md } }];"
+      },
+      "id": "a7b8c9d0-1234-5678-9abc-def012345695",
+      "name": "Build Final",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4180, 370]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [[{"node": "Init", "type": "main", "index": 0}]]
+    },
+    "Schedule Trigger": {
+      "main": [[{"node": "Init", "type": "main", "index": 0}]]
+    },
+    "Init": {
+      "main": [[{"node": "Split Out RSS", "type": "main", "index": 0}, {"node": "Split Out Topics", "type": "main", "index": 0}]]
+    },
+    "Split Out RSS": {
+      "main": [[{"node": "RSS Feed Read", "type": "main", "index": 0}]]
+    },
+    "RSS Feed Read": {
+      "main": [[{"node": "Normalize RSS", "type": "main", "index": 0}]]
+    },
+    "Split Out Topics": {
+      "main": [[{"node": "Cache Gate", "type": "main", "index": 0}]]
+    },
+    "Cache Gate": {
+      "main": [[{"node": "IF Cache Hit", "type": "main", "index": 0}]]
+    },
+    "IF Cache Hit": {
+      "main": [
+        [{"node": "Emit Cached Items", "type": "main", "index": 0}],
+        [{"node": "Fetch HN", "type": "main", "index": 0}, {"node": "Fetch GitHub", "type": "main", "index": 0}, {"node": "Fetch Crossref", "type": "main", "index": 0}]
+      ]
+    },
+    "Emit Cached Items": {
+      "main": [[{"node": "Topic Output Join", "type": "main", "index": 0}]]
+    },
+    "Fetch HN": {
+      "main": [[{"node": "Normalize HN", "type": "main", "index": 0}]]
+    },
+    "Fetch GitHub": {
+      "main": [[{"node": "Normalize GitHub", "type": "main", "index": 0}]]
+    },
+    "Fetch Crossref": {
+      "main": [[{"node": "Normalize Crossref", "type": "main", "index": 0}]]
+    },
+    "Normalize HN": {
+      "main": [[{"node": "Merge HN+GitHub", "type": "main", "index": 0}]]
+    },
+    "Normalize GitHub": {
+      "main": [[{"node": "Merge HN+GitHub", "type": "main", "index": 1}]]
+    },
+    "Merge HN+GitHub": {
+      "main": [[{"node": "Merge (prev)+Crossref", "type": "main", "index": 0}]]
+    },
+    "Normalize Crossref": {
+      "main": [[{"node": "Merge (prev)+Crossref", "type": "main", "index": 1}]]
+    },
+    "Merge (prev)+Crossref": {
+      "main": [[{"node": "Cache Save", "type": "main", "index": 0}]]
+    },
+    "Cache Save": {
+      "main": [[{"node": "Topic Output Join", "type": "main", "index": 1}]]
+    },
+    "Topic Output Join": {
+      "main": [[{"node": "Merge All Streams", "type": "main", "index": 1}]]
+    },
+    "Normalize RSS": {
+      "main": [[{"node": "Merge All Streams", "type": "main", "index": 0}]]
+    },
+    "Merge All Streams": {
+      "main": [[{"node": "Finalize", "type": "main", "index": 0}]]
+    },
+    "Finalize": {
+      "main": [[{"node": "IF LLM", "type": "main", "index": 0}]]
+    },
+    "IF LLM": {
+      "main": [
+        [{"node": "Prepare LLM", "type": "main", "index": 0}],
+        [{"node": "Fallback Summary", "type": "main", "index": 0}]
+      ]
+    },
+    "Prepare LLM": {
+      "main": [[{"node": "LLM HTTP", "type": "main", "index": 0}]]
+    },
+    "LLM HTTP": {
+      "main": [[{"node": "Apply Summaries", "type": "main", "index": 0}]]
+    },
+    "Apply Summaries": {
+      "main": [[{"node": "QA Lint", "type": "main", "index": 0}]]
+    },
+    "Fallback Summary": {
+      "main": [[{"node": "QA Lint", "type": "main", "index": 0}]]
+    },
+    "QA Lint": {
+      "main": [[{"node": "Build Final", "type": "main", "index": 0}]]
+    }
+  }
+}

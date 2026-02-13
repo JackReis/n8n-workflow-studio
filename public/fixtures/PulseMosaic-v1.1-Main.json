@@ -1,0 +1,227 @@
+{
+  "name": "PulseMosaic-v1.1-Main",
+  "nodes": [
+    {
+      "id": "a1-001",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "parameters": {}
+    },
+    {
+      "id": "a1-002",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 420],
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "hours", "hoursInterval": 4 }]
+        }
+      }
+    },
+    {
+      "id": "a1-003",
+      "name": "Init",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 360],
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    topics: [\"ai safety\", \"model context protocol\", \"n8n automation\", \"vector databases\", \"prompt injection\"],\n    endpoints: {\n      stackoverflow: \"https://api.stackexchange.com/2.3/search/advanced?order=desc&sort=activity&site=stackoverflow&q=\",\n      github: \"https://api.github.com/search/repositories?q=\",\n      arxiv: \"https://export.arxiv.org/api/query?search_query=all:\"\n    },\n    rss_feeds: [\n      \"https://hnrss.org/frontpage\",\n      \"https://www.nasa.gov/rss/dyn/breaking_news.rss\"\n    ],\n    config: {\n      cache_ttl_minutes: 45,\n      dedupe_ttl_days: 10,\n      min_score: 5,\n      max_items_total: 30,\n      enable_llm_summary: true,\n      ZAI_API_KEY: $env.ZAI_API_KEY || \"\",\n      ZAI_BASE_URL: $env.ZAI_BASE_URL || \"https://api.z.ai/api/paas/v4\",\n      ZAI_MODEL: $env.ZAI_MODEL || \"glm-5\"\n    }\n  }\n}];"
+      }
+    },
+    {
+      "id": "a1-004",
+      "name": "Split Out RSS",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [680, 240],
+      "parameters": {
+        "fieldToSplitOut": "rss_feeds",
+        "destinationFieldName": "rss_url"
+      }
+    },
+    {
+      "id": "a1-005",
+      "name": "RSS Feed Read",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1,
+      "position": [900, 240],
+      "parameters": {
+        "url": "={{ $json.rss_url }}"
+      }
+    },
+    {
+      "id": "a1-006",
+      "name": "Normalize RSS",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 240],
+      "parameters": {
+        "jsCode": "const items = [];\nconst data = $input.all();\nfor (const item of data) {\n  const feedUrl = item.json.rss_url;\n  const entries = Array.isArray(item.json) ? item.json : (item.json.items || []);\n  for (const entry of entries) {\n    items.push({\n      json: {\n        source: \"rss\",\n        topic: null,\n        title: entry.title || \"Untitled\",\n        url: entry.link || entry.url || \"\",\n        published_at: entry.pubDate || entry.isoDate || null,\n        raw_score: 0,\n        score: 5,\n        summary_raw: entry.contentSnippet || entry.description || null,\n        summary: null,\n        meta: { author: entry.creator || null, venue: feedUrl, cached: false }\n      }\n    });\n  }\n}\nreturn items.length > 0 ? items : [{ json: { __empty: true, __stream: \"rss\" } }];"
+      }
+    },
+    {
+      "id": "a1-007",
+      "name": "Split Out Topics",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [680, 480],
+      "parameters": {
+        "fieldToSplitOut": "topics",
+        "destinationFieldName": "topic"
+      }
+    },
+    {
+      "id": "a1-008",
+      "name": "Prepare Worker Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 480],
+      "parameters": {
+        "jsCode": "const init = $('Init').first().json;\nreturn [{\n  json: {\n    topic: $json.topic,\n    config: init.config,\n    endpoints: init.endpoints\n  }\n}];"
+      }
+    },
+    {
+      "id": "a1-009",
+      "name": "Execute Worker",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [1120, 480],
+      "parameters": {
+        "workflowId": "PulseMosaic-v1.1-Worker",
+        "options": {}
+      }
+    },
+    {
+      "id": "a1-010",
+      "name": "Merge Streams",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [1340, 360],
+      "parameters": {
+        "mode": "append"
+      }
+    },
+    {
+      "id": "a1-011",
+      "name": "Finalize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1560, 360],
+      "parameters": {
+        "jsCode": "const st = $getWorkflowStaticData('global');\nif (!st.seen) st.seen = {};\nconst now = Date.now();\nconst config = $('Init').first().json.config;\nconst ttl = config.dedupe_ttl_days * 24 * 60 * 60 * 1000;\n\n// Prune old entries\nfor (const url in st.seen) {\n  if (now - st.seen[url] > ttl) delete st.seen[url];\n}\n\nlet candidates = 0;\nlet newItems = 0;\nlet cachedHits = 0;\nlet apiCalls = 0;\nlet failedCalls = 0;\nconst bySource = {};\nconst items = [];\n\nconst input = $input.all();\nfor (const item of input) {\n  const i = item.json;\n  if (i.__empty) continue;\n  candidates++;\n  if (!bySource[i.source]) bySource[i.source] = 0;\n  bySource[i.source]++;\n  if (i.meta && i.meta.cached) cachedHits++;\n  if (i.__meta) {\n    if (i.__meta.api_calls) apiCalls += i.__meta.api_calls;\n    if (i.__meta.failed_calls) failedCalls += i.__meta.failed_calls;\n  }\n  \n  if (i.score >= config.min_score && i.url && !st.seen[i.url]) {\n    st.seen[i.url] = now;\n    newItems++;\n    items.push(i);\n  }\n}\n\nitems.sort((a, b) => b.score - a.score);\nconst finalItems = items.slice(0, config.max_items_total);\n\nreturn [{\n  json: {\n    config,\n    stats: {\n      candidates_total: candidates,\n      new_items: newItems,\n      cached_hits: cachedHits,\n      api_calls: apiCalls,\n      failed_calls: failedCalls,\n      by_source: bySource\n    },\n    items: finalItems,\n    run_id: $execution.id,\n    generated_at: new Date().toISOString()\n  }\n}];"
+      }
+    },
+    {
+      "id": "a1-012",
+      "name": "Check LLM",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1780, 360],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true },
+          "conditions": [
+            { "leftValue": "={{ $json.config.enable_llm_summary }}", "rightValue": true, "operator": { "type": "boolean", "operation": "equals" } },
+            { "leftValue": "={{ $json.config.ZAI_API_KEY }}", "rightValue": "", "operator": { "type": "string", "operation": "isNotEmpty" } }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "a1-013",
+      "name": "Prepare LLM",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 260],
+      "parameters": {
+        "jsCode": "const topItems = $json.items.slice(0, 12).map(i => ({ url: i.url, title: i.title, summary_raw: i.summary_raw || '' }));\nconst content = `Summarize these items in JSON format {\"summaries\":[{\"url\",\"summary\"}]}. Max 20 words per summary.\\n` + JSON.stringify(topItems);\nreturn [{\n  json: {\n    ...$json,\n    llm_payload: {\n      model: $json.config.ZAI_MODEL,\n      messages: [{ role: \"user\", content }],\n      temperature: 0.2,\n      response_format: { type: \"json_object\" }\n    }\n  }\n}];"
+      }
+    },
+    {
+      "id": "a1-014",
+      "name": "HTTP LLM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2220, 260],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.config.ZAI_BASE_URL + '/chat/completions' }}",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $json.config.ZAI_API_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { model: $json.llm_payload.model, messages: $json.llm_payload.messages, temperature: $json.llm_payload.temperature, response_format: $json.llm_payload.response_format } }}",
+        "options": { "continueOnFail": true }
+      }
+    },
+    {
+      "id": "a1-015",
+      "name": "Apply Summaries",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2440, 260],
+      "parameters": {
+        "jsCode": "const prev = $('Prepare LLM').first().json;\nlet items = prev.items;\nconst resp = $json;\n\nif (resp?.choices?.[0]?.message?.content) {\n  try {\n    const parsed = JSON.parse(resp.choices[0].message.content);\n    if (parsed.summaries && Array.isArray(parsed.summaries)) {\n      const map = new Map(parsed.summaries.map(s => [s.url, s.summary]));\n      items = items.map(i => ({ ...i, summary: map.get(i.url) || i.summary_raw || i.title }));\n    }\n  } catch (e) {\n    items = items.map(i => ({ ...i, summary: i.summary_raw || i.title }));\n  }\n} else {\n  items = items.map(i => ({ ...i, summary: i.summary_raw || i.title }));\n}\n\nreturn [{ json: { ...prev, items } }];"
+      }
+    },
+    {
+      "id": "a1-016",
+      "name": "Fallback Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 460],
+      "parameters": {
+        "jsCode": "const items = $json.items.map(i => ({ ...i, summary: i.summary_raw || i.title }));\nreturn [{ json: { ...$json, items } }];"
+      }
+    },
+    {
+      "id": "a1-017",
+      "name": "QA Lint",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2660, 360],
+      "parameters": {
+        "jsCode": "const data = $json;\nif (!Array.isArray(data.items)) throw new Error('Items must be array');\nfor (const i of data.items) {\n  if (!i.url || typeof i.url !== 'string') throw new Error('Invalid URL');\n  if (typeof i.score !== 'number') throw new Error('Invalid score');\n  const s = JSON.stringify(i);\n  if (s.includes('{{')) throw new Error('Contains mustache');\n}\nreturn [{ json: data }];"
+      }
+    },
+    {
+      "id": "a1-018",
+      "name": "Build Final",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2880, 360],
+      "parameters": {
+        "jsCode": "const data = $json;\nconst lines = [];\nconst groups = {};\nfor (const i of data.items) {\n  if (!groups[i.source]) groups[i.source] = [];\n  groups[i.source].push(i);\n}\nfor (const [src, items] of Object.entries(groups)) {\n  lines.push(`## ${src}`);\n  for (const i of items) {\n    lines.push(`- [${i.title}](${i.url}) (score ${i.score})`);\n  }\n}\nreturn [{\n  json: {\n    run_id: data.run_id,\n    generated_at: data.generated_at,\n    topics: $('Init').first().json.topics,\n    stats: data.stats,\n    items: data.items,\n    digest_markdown: lines.join('\\n')\n  }\n}];"
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": { "main": [[{ "node": "Init", "type": "main", "index": 0 }]] },
+    "Schedule Trigger": { "main": [[{ "node": "Init", "type": "main", "index": 0 }]] },
+    "Init": { "main": [[{ "node": "Split Out RSS", "type": "main", "index": 0 }, { "node": "Split Out Topics", "type": "main", "index": 0 }]] },
+    "Split Out RSS": { "main": [[{ "node": "RSS Feed Read", "type": "main", "index": 0 }]] },
+    "RSS Feed Read": { "main": [[{ "node": "Normalize RSS", "type": "main", "index": 0 }]] },
+    "Normalize RSS": { "main": [[{ "node": "Merge Streams", "type": "main", "index": 0 }]] },
+    "Split Out Topics": { "main": [[{ "node": "Prepare Worker Input", "type": "main", "index": 0 }]] },
+    "Prepare Worker Input": { "main": [[{ "node": "Execute Worker", "type": "main", "index": 0 }]] },
+    "Execute Worker": { "main": [[{ "node": "Merge Streams", "type": "main", "index": 1 }]] },
+    "Merge Streams": { "main": [[{ "node": "Finalize", "type": "main", "index": 0 }]] },
+    "Finalize": { "main": [[{ "node": "Check LLM", "type": "main", "index": 0 }]] },
+    "Check LLM": { "main": [[{ "node": "Prepare LLM", "type": "main", "index": 0 }], [{ "node": "Fallback Summary", "type": "main", "index": 0 }]] },
+    "Prepare LLM": { "main": [[{ "node": "HTTP LLM", "type": "main", "index": 0 }]] },
+    "HTTP LLM": { "main": [[{ "node": "Apply Summaries", "type": "main", "index": 0 }]] },
+    "Apply Summaries": { "main": [[{ "node": "QA Lint", "type": "main", "index": 0 }]] },
+    "Fallback Summary": { "main": [[{ "node": "QA Lint", "type": "main", "index": 0 }]] },
+    "QA Lint": { "main": [[{ "node": "Build Final", "type": "main", "index": 0 }]] }
+  }
+}

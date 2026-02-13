@@ -1,0 +1,405 @@
+[
+  {
+    "name": "SignalForge-v3.1-Main",
+    "nodes": [
+      {
+        "id": "a1b2c3d4-0000-4000-8000-000000000001",
+        "name": "Manual Trigger",
+        "type": "n8n-nodes-base.manualTrigger",
+        "typeVersion": 1,
+        "position": [240, 300],
+        "parameters": {}
+      },
+      {
+        "id": "a1b2c3d4-0000-4000-8000-000000000002",
+        "name": "Schedule Trigger",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1.1,
+        "position": [60, 300],
+        "parameters": {
+          "rule": { "interval": [{ "field": "hours", "hoursInterval": 2 }] }
+        }
+      },
+      {
+        "id": "a1b2c3d4-0000-4000-8000-000000000003",
+        "name": "Init Config",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [460, 300],
+        "parameters": {
+          "jsCode": "const config = {\n  dedupe_ttl_days: 7,\n  cache_ttl_minutes: 30,\n  max_items_total: 25,\n  min_score: 10,\n  enable_llm_summary: true,\n  ZAI_API_KEY: $env.ZAI_API_KEY || '',\n  ZAI_BASE_URL: $env.ZAI_BASE_URL || 'https://api.z.ai/api/paas/v4',\n  ZAI_MODEL: $env.ZAI_MODEL || 'glm-5'\n};\n\nconst rss_urls = [\n  'https://feeds.bbci.co.uk/news/technology/rss.xml',\n  'https://www.nasa.gov/rss/dyn/breaking_news.rss'\n];\n\nconst keywords = ['openai', 'anthropic', 'n8n', 'postgres', 'embeddings'];\n\nreturn [{ json: { rss_urls, keywords, config } }];"
+        }
+      },
+      {
+        "id": "a1b2c3d4-0000-4000-8000-000000000004",
+        "name": "Split Out RSS URLs",
+        "type": "n8n-nodes-base.splitOut",
+        "typeVersion": 1,
+        "position": [680, 200],
+        "parameters": {
+          "fieldToSplitOut": "rss_urls",
+          "destinationFieldName": "rss_url",
+          "options": {}
+        }
+      },
+      {
+        "id": "a1b2c3d4-0000-4000-8000-000000000005",
+        "name": "RSS Feed Read",
+        "type": "n8n-nodes-base.rssFeedRead",
+        "typeVersion": 1,
+        "position": [900, 200],
+        "parameters": {
+          "url": "={{ $json.rss_url }}",
+          "options": {}
+        }
+      },
+      {
+        "id": "a1b2c3d4-0000-4000-8000-000000000006",
+        "name": "Normalize RSS",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [1120, 200],
+        "parameters": {
+          "jsCode": "const items = $input.all();\nconst output = [];\n\nfor (const item of items) {\n  const feedData = item.json;\n  const entries = feedData.items || [];\n  \n  for (const entry of entries) {\n    output.push({\n      json: {\n        source: 'rss',\n        keyword: null,\n        title: entry.title || 'Untitled',\n        url: entry.link || entry.guid || '',\n        published_at: entry.pubDate || entry.isoDate || null,\n        raw_score: 15,\n        score: 15,\n        summary_raw: entry.contentSnippet || entry.summary || null,\n        summary: null,\n        meta: { author: entry.creator || null, venue: 'RSS Feed' }\n      }\n    });\n  }\n}\n\nreturn output;"
+        }
+      },
+      {
+        "id": "a1b2c3d4-0000-4000-8000-000000000007",
+        "name": "Ensure RSS NonEmpty",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [1340, 200],
+        "parameters": {
+          "jsCode": "const items = $input.all();\nif (!items || items.length === 0) {\n  return [{ json: { __empty: true, __stream: 'rss' } }];\n}\nreturn items;"
+        }
+      },
+      {
+        "id": "a1b2c3d4-0000-4000-8000-000000000008",
+        "name": "Split Out Keywords",
+        "type": "n8n-nodes-base.splitOut",
+        "typeVersion": 1,
+        "position": [680, 400],
+        "parameters": {
+          "fieldToSplitOut": "keywords",
+          "destinationFieldName": "keyword",
+          "options": {}
+        }
+      },
+      {
+        "id": "a1b2c3d4-0000-4000-8000-000000000009",
+        "name": "Execute Keyword Worker",
+        "type": "n8n-nodes-base.executeWorkflow",
+        "typeVersion": 1,
+        "position": [900, 400],
+        "parameters": {
+          "workflowId": "SignalForge-v3.1-KeywordWorker",
+          "dataToPass": "={{ JSON.stringify({ keyword: $json.keyword, config: $json.config }) }}"
+        }
+      },
+      {
+        "id": "a1b2c3d4-0000-4000-8000-000000000010",
+        "name": "Ensure KW NonEmpty",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [1120, 400],
+        "parameters": {
+          "jsCode": "const items = $input.all();\nif (!items || items.length === 0) {\n  return [{ json: { __empty: true, __stream: 'kw' } }];\n}\nreturn items;"
+        }
+      },
+      {
+        "id": "a1b2c3d4-0000-4000-8000-000000000011",
+        "name": "Merge All Items",
+        "type": "n8n-nodes-base.merge",
+        "typeVersion": 2.1,
+        "position": [1340, 300],
+        "parameters": {
+          "mode": "append",
+          "options": {}
+        }
+      },
+      {
+        "id": "a1b2c3d4-0000-4000-8000-000000000012",
+        "name": "Finalize + Dedupe + Rank",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [1560, 300],
+        "parameters": {
+          "jsCode": "const allItems = $input.all();\nconst staticData = this.getWorkflowStaticData('global');\nif (!staticData.seen) staticData.seen = {};\n\nconst now = Date.now();\nconst dedupeMs = 7 * 24 * 60 * 60 * 1000;\nconst minScore = 10;\nconst maxItems = 25;\n\nfor (const url in staticData.seen) {\n  if (now - staticData.seen[url] > dedupeMs) delete staticData.seen[url];\n}\n\nconst validItems = allItems.map(i => i.json).filter(i => !i.__empty);\nconst candidatesTotal = validItems.length;\nconst newItems = [];\nconst stats = { by_source: {}, cached_hits: 0, api_calls: 0, failed_calls: 0 };\n\nfor (const item of validItems) {\n  if (item.meta?.cached) stats.cached_hits++;\n  if (item.meta?.api_calls) stats.api_calls += item.meta.api_calls;\n  if (item.meta?.failed_calls) stats.failed_calls += item.meta.failed_calls;\n  stats.by_source[item.source] = (stats.by_source[item.source] || 0) + 1;\n  \n  if (!staticData.seen[item.url]) {\n    staticData.seen[item.url] = now;\n    newItems.push(item);\n  }\n}\n\nconst finalItems = newItems.filter(i => i.score >= minScore).sort((a, b) => b.score - a.score).slice(0, maxItems);\nconst digest = finalItems.map((item, idx) => `${idx + 1}. **${item.title}** (${item.source}) - ${item.url}`).join('\\n');\n\nconst config = allItems[0]?.json?.config || {};\nconst keywords = allItems[0]?.json?.keywords || [];\n\nreturn [{\n  json: {\n    run_id: $execution.id,\n    generated_at: new Date().toISOString(),\n    keywords,\n    config,\n    stats: { candidates_total: candidatesTotal, new_items: newItems.length, final_items: finalItems.length, ...stats },\n    items: finalItems,\n    digest_markdown: digest\n  }\n}];"
+        }
+      },
+      {
+        "id": "a1b2c3d4-0000-4000-8000-000000000013",
+        "name": "Optional LLM IF",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 1,
+        "position": [1780, 300],
+        "parameters": {
+          "conditions": {
+            "options": { "caseSensitive": true },
+            "conditions": [
+              { "leftValue": "={{ $json.config.enable_llm_summary }}", "rightValue": true, "operation": "equals" },
+              { "leftValue": "={{ $json.config.ZAI_API_KEY }}", "rightValue": "", "operation": "notEmpty" }
+            ],
+            "combinator": "and"
+          },
+          "options": {}
+        }
+      },
+      {
+        "id": "a1b2c3d4-0000-4000-8000-000000000014",
+        "name": "Prepare LLM Payload",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [2000, 200],
+        "parameters": {
+          "jsCode": "const data = $json;\nconst topItems = data.items.slice(0, 10);\n\nconst content = `Summarize the following ${topItems.length} tech news items briefly (max 15 words each). Return ONLY a JSON object with key 'summaries', an array of objects with 'url' and 'summary' keys.\\n` + \n  topItems.map(i => `URL: ${i.url}\\nTITLE: ${i.title}\\n`).join('\\n');\n\nreturn [{\n  json: {\n    config: data.config,\n    originalData: data,\n    body: {\n      model: data.config.ZAI_MODEL,\n      response_format: { type: 'json_object' },\n      messages: [{ role: 'user', content }]\n    }\n  }\n}];"
+        }
+      },
+      {
+        "id": "a1b2c3d4-0000-4000-8000-000000000015",
+        "name": "ZAI HTTP Request",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.1,
+        "position": [2220, 200],
+        "parameters": {
+          "method": "POST",
+          "url": "={{ $json.config.ZAI_BASE_URL + '/chat/completions' }}",
+          "authentication": "none",
+          "sendBody": true,
+          "bodyParameters": {
+            "parameters": [
+              { "name": "model", "value": "={{ $json.body.model }}" },
+              { "name": "messages", "value": "={{ JSON.stringify($json.body.messages) }}" },
+              { "name": "response_format", "value": "={{ JSON.stringify($json.body.response_format) }}" }
+            ]
+          },
+          "headerParameters": {
+            "parameters": [
+              { "name": "Authorization", "value": "={{ 'Bearer ' + $json.config.ZAI_API_KEY }}" },
+              { "name": "Content-Type", "value": "application/json" }
+            ]
+          },
+          "options": { "continueOnFail": true }
+        }
+      },
+      {
+        "id": "a1b2c3d4-0000-4000-8000-000000000016",
+        "name": "Apply Summaries",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [2440, 200],
+        "parameters": {
+          "jsCode": "const originalData = $('Prepare LLM Payload').item.json.originalData;\nconst response = $json;\n\nlet finalItems = originalData.items;\n\nif (response?.choices?.[0]?.message) {\n  try {\n    const content = response.choices[0].message.content;\n    const parsed = JSON.parse(content);\n    if (parsed.summaries && Array.isArray(parsed.summaries)) {\n      const summaryMap = {};\n      parsed.summaries.forEach(s => summaryMap[s.url] = s.summary);\n      finalItems = finalItems.map(item => ({\n        ...item,\n        summary: summaryMap[item.url] || item.summary_raw || item.title\n      }));\n    }\n  } catch (e) {\n    finalItems = finalItems.map(item => ({ ...item, summary: item.summary_raw || item.title }));\n  }\n} else {\n  finalItems = finalItems.map(item => ({ ...item, summary: item.summary_raw || item.title }));\n}\n\nreturn [{ json: { ...originalData, items: finalItems } }];"
+        }
+      },
+      {
+        "id": "a1b2c3d4-0000-4000-8000-000000000017",
+        "name": "Else-Fallback Summary",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [2000, 400],
+        "parameters": {
+          "jsCode": "const data = $json;\nconst finalItems = data.items.map(item => ({ ...item, summary: item.summary_raw || item.title }));\nreturn [{ json: { ...data, items: finalItems } }];"
+        }
+      },
+      {
+        "id": "a1b2c3d4-0000-4000-8000-000000000018",
+        "name": "QA Lint",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [2440, 300],
+        "parameters": {
+          "jsCode": "const data = $json;\nif (!Array.isArray(data.items)) throw new Error('Items is not an array');\ndata.items.forEach(item => {\n  if (!item.url || typeof item.url !== 'string') throw new Error('Invalid URL');\n  if (typeof item.score !== 'number') throw new Error('Invalid score');\n  const str = JSON.stringify(item);\n  if (str.includes('{{')) throw new Error('Detected unescaped handlebars');\n});\nreturn [{ json: data }];"
+        }
+      },
+      {
+        "id": "a1b2c3d4-0000-4000-8000-000000000019",
+        "name": "Build Final",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [2660, 300],
+        "parameters": {
+          "jsCode": "const data = $json;\nreturn [{\n  json: {\n    run_id: data.run_id,\n    generated_at: data.generated_at,\n    keywords: data.keywords,\n    stats: data.stats,\n    items: data.items,\n    digest_markdown: data.digest_markdown\n  }\n}];"
+        }
+      }
+    ],
+    "connections": {
+      "Manual Trigger": { "main": [[{"node": "Init Config", "type": "main", "index": 0}]] },
+      "Schedule Trigger": { "main": [[{"node": "Init Config", "type": "main", "index": 0}]] },
+      "Init Config": { "main": [[{"node": "Split Out RSS URLs", "type": "main", "index": 0}], [{"node": "Split Out Keywords", "type": "main", "index": 0}]] },
+      "Split Out RSS URLs": { "main": [[{"node": "RSS Feed Read", "type": "main", "index": 0}]] },
+      "RSS Feed Read": { "main": [[{"node": "Normalize RSS", "type": "main", "index": 0}]] },
+      "Normalize RSS": { "main": [[{"node": "Ensure RSS NonEmpty", "type": "main", "index": 0}]] },
+      "Ensure RSS NonEmpty": { "main": [[{"node": "Merge All Items", "type": "main", "index": 0}]] },
+      "Split Out Keywords": { "main": [[{"node": "Execute Keyword Worker", "type": "main", "index": 0}]] },
+      "Execute Keyword Worker": { "main": [[{"node": "Ensure KW NonEmpty", "type": "main", "index": 0}]] },
+      "Ensure KW NonEmpty": { "main": [[{"node": "Merge All Items", "type": "main", "index": 1}]] },
+      "Merge All Items": { "main": [[{"node": "Finalize + Dedupe + Rank", "type": "main", "index": 0}]] },
+      "Finalize + Dedupe + Rank": { "main": [[{"node": "Optional LLM IF", "type": "main", "index": 0}]] },
+      "Optional LLM IF": { "main": [[{"node": "Prepare LLM Payload", "type": "main", "index": 0}], [{"node": "Else-Fallback Summary", "type": "main", "index": 0}]] },
+      "Prepare LLM Payload": { "main": [[{"node": "ZAI HTTP Request", "type": "main", "index": 0}]] },
+      "ZAI HTTP Request": { "main": [[{"node": "Apply Summaries", "type": "main", "index": 0}]] },
+      "Apply Summaries": { "main": [[{"node": "QA Lint", "type": "main", "index": 0}]] },
+      "Else-Fallback Summary": { "main": [[{"node": "QA Lint", "type": "main", "index": 0}]] },
+      "QA Lint": { "main": [[{"node": "Build Final", "type": "main", "index": 0}]] }
+    }
+  },
+  {
+    "name": "SignalForge-v3.1-KeywordWorker",
+    "nodes": [
+      {
+        "id": "b1b2c3d4-0000-4000-8000-000000000001",
+        "name": "Execute Workflow Trigger",
+        "type": "n8n-nodes-base.executeWorkflowTrigger",
+        "typeVersion": 1,
+        "position": [240, 300],
+        "parameters": {}
+      },
+      {
+        "id": "b1b2c3d4-0000-4000-8000-000000000002",
+        "name": "Cache Gate",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [460, 300],
+        "parameters": {
+          "jsCode": "const staticData = this.getWorkflowStaticData('global');\nif (!staticData.cache) staticData.cache = {};\n\nconst input = $input.first().json;\nconst keyword = input.keyword;\nconst config = input.config;\nconst ttlMs = (config.cache_ttl_minutes || 30) * 60 * 1000;\nconst now = Date.now();\n\nconst cached = staticData.cache[keyword];\n\nif (cached && (now - cached.ts_epoch_ms < ttlMs)) {\n  return [{ json: { keyword, config, cache_hit: true, cached_items: cached.items, cached_hits: (cached.hits || 0), api_calls: 0, failed_calls: 0 } }];\n}\n\nreturn [{ json: { keyword, config, cache_hit: false, cached_hits: 0, api_calls: 0, failed_calls: 0 } }];"
+        }
+      },
+      {
+        "id": "b1b2c3d4-0000-4000-8000-000000000003",
+        "name": "IF cache_hit",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 1,
+        "position": [680, 300],
+        "parameters": {
+          "conditions": {
+            "options": { "caseSensitive": true },
+            "conditions": [{ "leftValue": "={{ $json.cache_hit }}", "rightValue": true, "operation": "equals" }],
+            "combinator": "and"
+          }
+        }
+      },
+      {
+        "id": "b1b2c3d4-0000-4000-8000-000000000004",
+        "name": "Emit Cached Items",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [900, 200],
+        "parameters": {
+          "jsCode": "const data = $json;\nreturn data.cached_items.map(item => ({\n  json: { ...item, meta: { ...item.meta, cached: true, api_calls: 0, failed_calls: 0 } }\n}));"
+        }
+      },
+      {
+        "id": "b1b2c3d4-0000-4000-8000-000000000005",
+        "name": "Fetch HN",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.1,
+        "position": [900, 400],
+        "parameters": {
+          "method": "GET",
+          "url": "={{ 'https://hn.algolia.com/api/v1/search?query=' + encodeURIComponent($json.keyword) + '&tags=story&hitsPerPage=5' }}",
+          "options": { "continueOnFail": true }
+        }
+      },
+      {
+        "id": "b1b2c3d4-0000-4000-8000-000000000006",
+        "name": "Normalize HN",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [1120, 400],
+        "parameters": {
+          "jsCode": "const keyword = $('Cache Gate').item.json.keyword;\nconst data = $json;\n\nif (!data || !data.hits || data.error) {\n  return [{ json: { __empty: true, __src: 'hn', meta: { failed_calls: 1 } } }];\n}\n\nreturn data.hits.map(hit => ({\n  json: {\n    source: 'hn',\n    keyword,\n    title: hit.title,\n    url: hit.url || `https://news.ycombinator.com/item?id=${hit.objectID}`,\n    published_at: hit.created_at ? new Date(hit.created_at).toISOString() : null,\n    raw_score: (hit.points || 0) + (hit.num_comments || 0),\n    score: (hit.points || 0) + (hit.num_comments || 0),\n    summary_raw: null,\n    summary: null,\n    meta: { author: hit.author, venue: 'Hacker News', failed_calls: 0 }\n  }\n}));"
+        }
+      },
+      {
+        "id": "b1b2c3d4-0000-4000-8000-000000000007",
+        "name": "Fetch Wikipedia",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.1,
+        "position": [900, 500],
+        "parameters": {
+          "method": "GET",
+          "url": "={{ 'https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=' + encodeURIComponent($json.keyword) + '&format=json&utf8=1&srlimit=5' }}",
+          "options": { "continueOnFail": true }
+        }
+      },
+      {
+        "id": "b1b2c3d4-0000-4000-8000-000000000008",
+        "name": "Normalize Wikipedia",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [1120, 500],
+        "parameters": {
+          "jsCode": "const keyword = $('Cache Gate').item.json.keyword;\nconst data = $json;\n\nif (!data || !data.query || !data.query.search || data.error) {\n  return [{ json: { __empty: true, __src: 'wikipedia', meta: { failed_calls: 1 } } }];\n}\n\nreturn data.query.search.map(hit => ({\n  json: {\n    source: 'wikipedia',\n    keyword,\n    title: hit.title,\n    url: `https://en.wikipedia.org/wiki/${encodeURIComponent(hit.title.replace(/ /g, '_'))}`,\n    published_at: null,\n    raw_score: Math.floor((hit.size || 0) / 100),\n    score: Math.floor((hit.size || 0) / 100),\n    summary_raw: hit.snippet || null,\n    summary: null,\n    meta: { author: null, venue: 'Wikipedia', failed_calls: 0 }\n  }\n}));"
+        }
+      },
+      {
+        "id": "b1b2c3d4-0000-4000-8000-000000000009",
+        "name": "Fetch Crossref",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.1,
+        "position": [900, 600],
+        "parameters": {
+          "method": "GET",
+          "url": "={{ 'https://api.crossref.org/works?query=' + encodeURIComponent($json.keyword) + '&rows=5&select=title,URL,published-print,created,is-referenced-by-count' }}",
+          "options": { "continueOnFail": true }
+        }
+      },
+      {
+        "id": "b1b2c3d4-0000-4000-8000-000000000010",
+        "name": "Normalize Crossref",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [1120, 600],
+        "parameters": {
+          "jsCode": "const keyword = $('Cache Gate').item.json.keyword;\nconst data = $json;\n\nif (!data || !data.message || !data.message.items || data.error) {\n  return [{ json: { __empty: true, __src: 'crossref', meta: { failed_calls: 1 } } }];\n}\n\nreturn data.message.items.map(item => ({\n  json: {\n    source: 'crossref',\n    keyword,\n    title: (item.title && item.title[0]) ? item.title[0] : 'Untitled',\n    url: item.URL || '',\n    published_at: (item['published-print'] && item['published-print']['date-time']) ? item['published-print']['date-time'] : null,\n    raw_score: 20 + (item['is-referenced-by-count'] || 0),\n    score: 20 + (item['is-referenced-by-count'] || 0),\n    summary_raw: null,\n    summary: null,\n    meta: { author: null, venue: 'Crossref', failed_calls: 0 }\n  }\n}));"
+        }
+      },
+      {
+        "id": "b1b2c3d4-0000-4000-8000-000000000011",
+        "name": "Merge HN+Wiki",
+        "type": "n8n-nodes-base.merge",
+        "typeVersion": 2.1,
+        "position": [1340, 450],
+        "parameters": { "mode": "append", "options": {} }
+      },
+      {
+        "id": "b1b2c3d4-0000-4000-8000-000000000012",
+        "name": "Merge All Sources",
+        "type": "n8n-nodes-base.merge",
+        "typeVersion": 2.1,
+        "position": [1560, 520],
+        "parameters": { "mode": "append", "options": {} }
+      },
+      {
+        "id": "b1b2c3d4-0000-4000-8000-000000000013",
+        "name": "Strip Placeholders + Cache Save",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [1780, 520],
+        "parameters": {
+          "jsCode": "const staticData = this.getWorkflowStaticData('global');\nconst keyword = $('Cache Gate').item.json.keyword;\nconst allItems = $input.all();\n\nlet failed_calls = 0;\nconst validItems = allItems\n  .map(i => i.json)\n  .filter(i => {\n    if (i.__empty && i.meta?.failed_calls) {\n      failed_calls += i.meta.failed_calls;\n      return false;\n    }\n    return !i.__empty;\n  });\n\nstaticData.cache[keyword] = {\n  ts_epoch_ms: Date.now(),\n  items: validItems,\n  hits: validItems.length\n};\n\nreturn validItems.map(item => ({\n  json: {\n    ...item,\n    meta: { \n      ...item.meta, \n      cached: false, \n      api_calls: 3, \n      failed_calls: failed_calls \n    }\n  }\n}));"
+        }
+      }
+    ],
+    "connections": {
+      "Execute Workflow Trigger": { "main": [[{"node": "Cache Gate", "type": "main", "index": 0}]] },
+      "Cache Gate": { "main": [[{"node": "IF cache_hit", "type": "main", "index": 0}]] },
+      "IF cache_hit": {
+        "main": [
+          [{"node": "Emit Cached Items", "type": "main", "index": 0}],
+          [{"node": "Fetch HN", "type": "main", "index": 0}, {"node": "Fetch Wikipedia", "type": "main", "index": 0}, {"node": "Fetch Crossref", "type": "main", "index": 0}]
+        ]
+      },
+      "Emit Cached Items": { "main": [[{"node": "Strip Placeholders + Cache Save", "type": "main", "index": 0}]] },
+      "Fetch HN": { "main": [[{"node": "Normalize HN", "type": "main", "index": 0}]] },
+      "Normalize HN": { "main": [[{"node": "Merge HN+Wiki", "type": "main", "index": 0}]] },
+      "Fetch Wikipedia": { "main": [[{"node": "Normalize Wikipedia", "type": "main", "index": 0}]] },
+      "Normalize Wikipedia": { "main": [[{"node": "Merge HN+Wiki", "type": "main", "index": 1}]] },
+      "Merge HN+Wiki": { "main": [[{"node": "Merge All Sources", "type": "main", "index": 0}]] },
+      "Fetch Crossref": { "main": [[{"node": "Normalize Crossref", "type": "main", "index": 0}]] },
+      "Normalize Crossref": { "main": [[{"node": "Merge All Sources", "type": "main", "index": 1}]] },
+      "Merge All Sources": { "main": [[{"node": "Strip Placeholders + Cache Save", "type": "main", "index": 0}]] }
+    }
+  }
+]

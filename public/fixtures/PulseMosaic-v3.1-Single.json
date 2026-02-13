@@ -1,0 +1,390 @@
+{
+  "name": "PulseMosaic-v3.1-Single",
+  "nodes": [
+    {
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "parameters": {}
+    },
+    {
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 420],
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "hours", "hoursInterval": 4 }]
+        }
+      }
+    },
+    {
+      "id": "init-code",
+      "name": "Init",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 360],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const rss_feeds = [\n  \"https://hnrss.org/frontpage\",\n  \"https://www.nasa.gov/rss/dyn/breaking_news.rss\"\n];\n\nconst topics = [\n  \"ai safety\",\n  \"model context protocol\",\n  \"n8n automation\",\n  \"vector databases\",\n  \"prompt injection\"\n];\n\nconst config = {\n  cache_ttl_minutes: 45,\n  dedupe_ttl_days: 10,\n  min_score: 5,\n  max_items_total: 30,\n  enable_llm_summary: true,\n  ZAI_API_KEY: $env.ZAI_API_KEY || \"\",\n  ZAI_BASE_URL: $env.ZAI_BASE_URL || \"https://api.z.ai/api/paas/v4\",\n  ZAI_MODEL: $env.ZAI_MODEL || \"glm-5\"\n};\n\nreturn [{ json: { rss_feeds, topics, config } }];"
+      }
+    },
+    {
+      "id": "split-rss",
+      "name": "Split Out RSS Feeds",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [680, 240],
+      "parameters": {
+        "fieldToSplitOut": "rss_feeds",
+        "destinationFieldName": "rss_url",
+        "options": {}
+      }
+    },
+    {
+      "id": "rss-read",
+      "name": "RSS Feed Read",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1,
+      "position": [900, 240],
+      "parameters": {
+        "url": "={{ $json.rss_url }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "norm-rss",
+      "name": "Normalize RSS",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 240],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const items = $input.all();\nconst results = [];\nconst feedUrl = items[0]?.json?.rss_url || '';\n\nconst sourceMap = {\n  \"hnrss.org\": \"hackernews\",\n  \"nasa.gov\": \"nasa\"\n};\n\nlet source = \"rss\";\nfor (const [key] of Object.entries(sourceMap)) {\n  if (feedUrl.includes(key)) source = sourceMap[key];\n}\n\nfor (const item of items) {\n  const data = item.json;\n  results.push({\n    json: {\n      source: source,\n      topic: null,\n      title: data.title || \"Untitled\",\n      url: data.link || data.guid || \"\",\n      published_at: data.pubDate || data.isoDate || new Date().toISOString(),\n      raw_score: 0,\n      score: 5,\n      summary_raw: data.contentSnippet || data.description || null,\n      summary: null,\n      meta: {\n        author: data.creator || data.author || null,\n        venue: source,\n        cached: false\n      }\n    }\n  });\n}\n\nreturn results;"
+      }
+    },
+    {
+      "id": "split-topics",
+      "name": "Split Out Topics",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [680, 480],
+      "parameters": {
+        "fieldToSplitOut": "topics",
+        "destinationFieldName": "topic",
+        "options": {}
+      }
+    },
+    {
+      "id": "cache-gate",
+      "name": "Cache Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 480],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const topic = $json.topic;\nconst config = $('Init').first().json.config;\nconst st = $getWorkflowStaticData('global');\n\nif (!st.cache) st.cache = {};\n\nconst now = Date.now();\nconst ttl_ms = config.cache_ttl_minutes * 60 * 1000;\n\n// Prune expired cache entries\nfor (const k in st.cache) {\n  if (now - st.cache[k].ts_epoch_ms > ttl_ms) {\n    delete st.cache[k];\n  }\n}\n\nconst cached = st.cache[topic];\nif (cached && (now - cached.ts_epoch_ms < ttl_ms)) {\n  return [{ json: { topic, config, cache_hit: true, cached_items: cached.items || [] } }];\n}\n\nreturn [{ json: { topic, config, cache_hit: false, cached_items: [] } }];"
+      }
+    },
+    {
+      "id": "if-cache",
+      "name": "IF Cache Hit",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1120, 480],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json.cache_hit }}", "rightValue": true, "operator": { "type": "boolean", "operation": "equals" } }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "emit-cached",
+      "name": "Emit Cached Items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 380],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const items = $json.cached_items || [];\nif (items.length === 0) {\n  return [{ json: { __empty: true, __stream: 'cache', __meta: { cached_hits: 0 } } }];\n}\nreturn items.map(i => ({ json: { ...i, meta: { ...i.meta, cached: true }, __meta: { cached_hits: items.length } } }));"
+      }
+    },
+    {
+      "id": "fetch-so",
+      "name": "Fetch StackOverflow",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1340, 580],
+      "parameters": {
+        "url": "={{ 'https://api.stackexchange.com/2.3/search/advanced?order=desc&sort=activity&site=stackoverflow&q=' + encodeURIComponent($('Cache Gate').first().json.topic) + '&pagesize=5' }}",
+        "method": "GET",
+        "options": { "response": { "response": { "responseFormat": "json" } }, "neverError": true }
+      }
+    },
+    {
+      "id": "fetch-cr",
+      "name": "Fetch Crossref",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1340, 700],
+      "parameters": {
+        "url": "={{ 'https://api.crossref.org/works?query=' + encodeURIComponent($('Cache Gate').first().json.topic) + '&rows=5' }}",
+        "method": "GET",
+        "options": { "response": { "response": { "responseFormat": "json" } }, "neverError": true }
+      }
+    },
+    {
+      "id": "norm-so",
+      "name": "Normalize StackOverflow",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1560, 580],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const data = $json;\nconst topic = $('Cache Gate').first().json.topic;\nconst items = [];\n\n// Guard: check for valid response\nif (!data || data.error || !data.items || !Array.isArray(data.items)) {\n  return [{ json: { __empty: true, __src: 'stackoverflow', __meta: { failed_calls: 1 } } }];\n}\n\nfor (const i of data.items) {\n  items.push({\n    json: {\n      source: \"stackoverflow\",\n      topic: topic,\n      title: i.title || \"Untitled\",\n      url: i.link || \"\",\n      published_at: i.creation_date ? new Date(i.creation_date * 1000).toISOString() : null,\n      raw_score: i.score || 0,\n      score: (i.score || 0) + (i.answer_count || 0),\n      summary_raw: i.excerpt || (i.tags ? i.tags.join(', ') : null),\n      summary: null,\n      meta: {\n        author: i.owner?.display_name || null,\n        venue: \"StackOverflow\",\n        cached: false\n      }\n    }\n  });\n}\n\nreturn items;"
+      }
+    },
+    {
+      "id": "norm-cr",
+      "name": "Normalize Crossref",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1560, 700],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const data = $json;\nconst topic = $('Cache Gate').first().json.topic;\nconst items = [];\n\n// Guard: check for valid response\nif (!data || data.error || !data.message || !data.message.items) {\n  return [{ json: { __empty: true, __src: 'crossref', __meta: { failed_calls: 1 } } }];\n}\n\nfor (const i of data.message.items) {\n  const title = (Array.isArray(i.title) ? i.title[0] : i.title) || \"Untitled\";\n  const url = (i.URL && i.URL.startsWith('http')) ? i.URL : `https://doi.org/${i.DOI}`;\n  const refs = i['is-referenced-by-count'] || 0;\n  const dateParts = i.published?.['date-parts']?.[0];\n  \n  items.push({\n    json: {\n      source: \"crossref\",\n      topic: topic,\n      title: title,\n      url: url,\n      published_at: dateParts ? dateParts.join('-') : null,\n      raw_score: refs,\n      score: 20 + refs,\n      summary_raw: i.abstract || null,\n      summary: null,\n      meta: {\n        author: null,\n        venue: i['container-title']?.[0] || \"Journal\",\n        cached: false\n      }\n    }\n  });\n}\n\nreturn items;"
+      }
+    },
+    {
+      "id": "merge-sources",
+      "name": "Merge Append (SO+CR)",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1780, 640],
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition",
+        "options": {}
+      }
+    },
+    {
+      "id": "cache-save",
+      "name": "Cache Save",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 640],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const topic = $('Cache Gate').first().json.topic;\nconst st = $getWorkflowStaticData('global');\n\n// Ensure cache exists\nif (!st.cache) st.cache = {};\n\n// Collect valid items (skip __empty markers)\nlet failedCalls = 0;\nconst validItems = [];\n\nfor (const item of $input.all()) {\n  const i = item.json;\n  if (i.__empty) {\n    if (i.__meta?.failed_calls) failedCalls += i.__meta.failed_calls;\n    continue;\n  }\n  validItems.push(i);\n}\n\n// Save to cache (even if empty - prevents repeated API calls on no results)\nst.cache[topic] = {\n  ts_epoch_ms: Date.now(),\n  items: validItems\n};\n\n// Return items with metadata\nif (validItems.length === 0) {\n  return [{ json: { __empty: true, topic, __meta: { api_calls: 2, failed_calls: failedCalls || 2 } } }];\n}\n\nreturn validItems.map(i => ({ json: { ...i, __meta: { api_calls: 2, failed_calls: 0 } } }));"
+      }
+    },
+    {
+      "id": "merge-streams",
+      "name": "Merge Streams",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [2220, 440],
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition",
+        "options": {}
+      }
+    },
+    {
+      "id": "finalize",
+      "name": "Finalize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2440, 440],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const config = $('Init').first().json.config;\nconst st = $getWorkflowStaticData('global');\n\nif (!st.seen) st.seen = {};\n\nconst now = Date.now();\nconst dedupe_ms = config.dedupe_ttl_days * 24 * 60 * 60 * 1000;\n\n// Prune old seen entries to prevent unbounded growth\nfor (const k in st.seen) {\n  if (now - st.seen[k] > dedupe_ms) delete st.seen[k];\n}\n\nconst allItems = $input.all();\nconst stats = {\n  candidates_total: 0,\n  new_items: 0,\n  cached_hits: 0,\n  api_calls: 0,\n  failed_calls: 0,\n  by_source: {}\n};\n\nconst final = [];\n\nfor (const item of allItems) {\n  const i = item.json;\n  \n  // Skip empty markers but count their stats\n  if (i.__empty) {\n    if (i.__meta?.failed_calls) stats.failed_calls += i.__meta.failed_calls;\n    continue;\n  }\n  \n  stats.candidates_total++;\n  stats.by_source[i.source] = (stats.by_source[i.source] || 0) + 1;\n  \n  // Count cached hits\n  if (i.meta?.cached) stats.cached_hits++;\n  \n  // Count API calls from metadata\n  if (i.__meta?.api_calls) stats.api_calls += i.__meta.api_calls;\n  if (i.__meta?.failed_calls) stats.failed_calls += i.__meta.failed_calls;\n  \n  // Dedupe and score filter\n  if (i.url && !st.seen[i.url]) {\n    if (i.score >= config.min_score) {\n      final.push(i);\n      st.seen[i.url] = now;\n      stats.new_items++;\n    }\n  }\n}\n\nfinal.sort((a, b) => b.score - a.score);\nconst sliced = final.slice(0, config.max_items_total);\n\nreturn [{ json: {\n  config,\n  stats,\n  items: sliced,\n  run_id: $workflow.id,\n  generated_at: new Date().toISOString(),\n  topics: $('Init').first().json.topics\n} }];"
+      }
+    },
+    {
+      "id": "if-llm",
+      "name": "IF LLM",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2660, 440],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json.config.enable_llm_summary }}", "rightValue": true, "operator": { "type": "boolean", "operation": "equals" } },
+            { "leftValue": "={{ $json.config.ZAI_API_KEY }}", "rightValue": "", "operator": { "type": "string", "operation": "isNotEmpty" } }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "prep-llm",
+      "name": "Prepare LLM",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2880, 340],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const data = $json;\nconst topItems = (data.items || []).slice(0, 12);\n\nconst content = topItems.map(i => \n  `URL: ${i.url}\\nTitle: ${i.title}\\nRaw: ${i.summary_raw || ''}`\n).join('\\n\\n');\n\nreturn [{\n  json: {\n    // Preserve all original data - will be read by Apply Summaries\n    __baseData: {\n      config: data.config,\n      stats: data.stats,\n      items: data.items,\n      run_id: data.run_id,\n      generated_at: data.generated_at,\n      topics: data.topics\n    },\n    // LLM request payload\n    llm_payload: {\n      model: data.config.ZAI_MODEL,\n      messages: [{\n        role: \"user\",\n        content: `Summarize the following items into a JSON object with key 'summaries', an array of objects with 'url' and 'summary' (max 20 words).\\n\\n${content}`\n      }],\n      temperature: 0.3\n    },\n    config: data.config\n  }\n}];"
+      }
+    },
+    {
+      "id": "req-llm",
+      "name": "HTTP Request LLM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3100, 340],
+      "parameters": {
+        "authentication": "none",
+        "url": "={{ $json.config.ZAI_BASE_URL + '/chat/completions' }}",
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $json.config.ZAI_API_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $json.llm_payload.model, messages: $json.llm_payload.messages, temperature: $json.llm_payload.temperature, response_format: { type: 'json_object' } }) }}",
+        "options": { "response": { "response": { "responseFormat": "json" } }, "neverError": true }
+      }
+    },
+    {
+      "id": "apply-llm",
+      "name": "Apply Summaries",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3320, 340],
+      "parameters": {
+        "language": "javaScript",
+        "// CRITICAL: Read base data from Prepare LLM (not from HTTP response which overwrites json)": "",
+        "jsCode": "// Get base data from Prepare LLM node (preserves context after HTTP overwrites)\nconst prepNode = $('Prepare LLM').first().json;\nconst baseData = prepNode.__baseData || prepNode;\n\n// Get LLM response from current input (HTTP response)\nconst llmResponse = $input.first().json;\n\nlet summariesMap = {};\n\ntry {\n  const content = llmResponse?.choices?.[0]?.message?.content;\n  if (content) {\n    const parsed = JSON.parse(content);\n    \n    // Format 1: { summaries: [{ url, summary }, ...] }\n    if (Array.isArray(parsed.summaries)) {\n      for (const s of parsed.summaries) {\n        if (s.url && s.summary) {\n          summariesMap[s.url] = s.summary;\n        }\n      }\n    }\n    // Format 2: { \"<url>\": \"<summary>\", ... }\n    else if (typeof parsed === 'object') {\n      for (const [url, summary] of Object.entries(parsed)) {\n        if (typeof summary === 'string') {\n          summariesMap[url] = summary;\n        }\n      }\n    }\n  }\n} catch (e) {\n  console.error('LLM response parse error:', e);\n}\n\n// Apply summaries to items\nconst items = (baseData.items || []).map(i => ({\n  json: {\n    ...i,\n    summary: summariesMap[i.url] || i.summary_raw || i.title\n  }\n}));\n\nreturn [{ json: {\n  config: baseData.config,\n  stats: baseData.stats,\n  items: items.map(i => i.json),\n  run_id: baseData.run_id,\n  generated_at: baseData.generated_at,\n  topics: baseData.topics\n} }];"
+      }
+    },
+    {
+      "id": "fallback-llm",
+      "name": "Fallback Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2880, 540],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const data = $json;\nconst items = (data.items || []).map(i => ({\n  json: {\n    ...i,\n    summary: i.summary_raw || i.title\n  }\n}));\n\nreturn [{ json: {\n  config: data.config,\n  stats: data.stats,\n  items: items.map(i => i.json),\n  run_id: data.run_id,\n  generated_at: data.generated_at,\n  topics: data.topics\n} }];"
+      }
+    },
+    {
+      "id": "qa-lint",
+      "name": "QA Lint",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3540, 440],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const data = $json;\n\nif (!Array.isArray(data.items)) {\n  throw new Error('Invalid: items must be array');\n}\n\nfor (const i of data.items) {\n  if (!i.url || typeof i.url !== 'string') {\n    throw new Error('Invalid: missing or invalid url');\n  }\n  if (typeof i.score !== 'number') {\n    throw new Error('Invalid: score must be number');\n  }\n  // Check for unresolved mustache templates\n  const s = JSON.stringify(i);\n  if (s.includes('{{') && s.includes('}}')) {\n    throw new Error('Invalid: unresolved mustache template detected');\n  }\n}\n\nreturn [{ json: data }];"
+      }
+    },
+    {
+      "id": "build-final",
+      "name": "Build Final",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3760, 440],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const data = $json;\nconst groups = {};\n\nfor (const i of data.items) {\n  if (!groups[i.source]) groups[i.source] = [];\n  groups[i.source].push(i);\n}\n\nlet md = `# PulseMosaic Digest - ${data.generated_at}\\n\\n`;\nmd += `**Topics:** ${data.topics?.join(', ') || 'N/A'}\\n\\n`;\nmd += `**Stats:** ${data.stats?.new_items || 0} new items, ${data.stats?.cached_hits || 0} cached, ${data.stats?.api_calls || 0} API calls\\n\\n`;\n\nfor (const [src, items] of Object.entries(groups)) {\n  md += `## ${src.toUpperCase()}\\n`;\n  for (const i of items) {\n    md += `- [${i.title}](${i.url}) (Score: ${i.score})\\n`;\n    if (i.summary) md += `  > ${i.summary}\\n`;\n  }\n  md += `\\n`;\n}\n\nreturn [{ json: { ...data, digest_markdown: md } }];"
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [[{ "node": "Init", "type": "main", "index": 0 }]]
+    },
+    "Schedule Trigger": {
+      "main": [[{ "node": "Init", "type": "main", "index": 0 }]]
+    },
+    "Init": {
+      "main": [[{ "node": "Split Out RSS Feeds", "type": "main", "index": 0 }, { "node": "Split Out Topics", "type": "main", "index": 0 }]]
+    },
+    "Split Out RSS Feeds": {
+      "main": [[{ "node": "RSS Feed Read", "type": "main", "index": 0 }]]
+    },
+    "RSS Feed Read": {
+      "main": [[{ "node": "Normalize RSS", "type": "main", "index": 0 }]]
+    },
+    "Normalize RSS": {
+      "main": [[{ "node": "Merge Streams", "type": "main", "index": 0 }]]
+    },
+    "Split Out Topics": {
+      "main": [[{ "node": "Cache Gate", "type": "main", "index": 0 }]]
+    },
+    "Cache Gate": {
+      "main": [[{ "node": "IF Cache Hit", "type": "main", "index": 0 }]]
+    },
+    "IF Cache Hit": {
+      "main": [
+        [{ "node": "Emit Cached Items", "type": "main", "index": 0 }],
+        [{ "node": "Fetch StackOverflow", "type": "main", "index": 0 }, { "node": "Fetch Crossref", "type": "main", "index": 0 }]
+      ]
+    },
+    "Emit Cached Items": {
+      "main": [[{ "node": "Merge Streams", "type": "main", "index": 1 }]]
+    },
+    "Fetch StackOverflow": {
+      "main": [[{ "node": "Normalize StackOverflow", "type": "main", "index": 0 }]]
+    },
+    "Fetch Crossref": {
+      "main": [[{ "node": "Normalize Crossref", "type": "main", "index": 0 }]]
+    },
+    "Normalize StackOverflow": {
+      "main": [[{ "node": "Merge Append (SO+CR)", "type": "main", "index": 0 }]]
+    },
+    "Normalize Crossref": {
+      "main": [[{ "node": "Merge Append (SO+CR)", "type": "main", "index": 1 }]]
+    },
+    "Merge Append (SO+CR)": {
+      "main": [[{ "node": "Cache Save", "type": "main", "index": 0 }]]
+    },
+    "Cache Save": {
+      "main": [[{ "node": "Merge Streams", "type": "main", "index": 2 }]]
+    },
+    "Merge Streams": {
+      "main": [[{ "node": "Finalize", "type": "main", "index": 0 }]]
+    },
+    "Finalize": {
+      "main": [[{ "node": "IF LLM", "type": "main", "index": 0 }]]
+    },
+    "IF LLM": {
+      "main": [
+        [{ "node": "Prepare LLM", "type": "main", "index": 0 }],
+        [{ "node": "Fallback Summary", "type": "main", "index": 0 }]
+      ]
+    },
+    "Prepare LLM": {
+      "main": [[{ "node": "HTTP Request LLM", "type": "main", "index": 0 }]]
+    },
+    "HTTP Request LLM": {
+      "main": [[{ "node": "Apply Summaries", "type": "main", "index": 0 }]]
+    },
+    "Apply Summaries": {
+      "main": [[{ "node": "QA Lint", "type": "main", "index": 0 }]]
+    },
+    "Fallback Summary": {
+      "main": [[{ "node": "QA Lint", "type": "main", "index": 0 }]]
+    },
+    "QA Lint": {
+      "main": [[{ "node": "Build Final", "type": "main", "index": 0 }]]
+    }
+  }
+}

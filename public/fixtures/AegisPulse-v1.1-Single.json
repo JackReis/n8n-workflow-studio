@@ -1,0 +1,969 @@
+{
+  "name": "AegisPulse-v1.1-Single",
+  "nodes": [
+    {
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [
+        240,
+        420
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "init",
+      "name": "Init",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        360
+      ],
+      "parameters": {
+        "code": "const rss_feeds = [\n  \"https://hnrss.org/frontpage\",\n  \"https://feeds.bbci.co.uk/news/technology/rss.xml\"\n];\n\nconst topics = [\n  \"agentic workflows\",\n  \"model context protocol\",\n  \"vector databases\",\n  \"prompt injection\",\n  \"postgres embeddings\"\n];\n\nconst config = {\n  cache_ttl_minutes: 90,\n  dedupe_ttl_days: 21,\n  min_score: 6,\n  max_items_total: 45,\n  max_per_source: 16,\n  max_per_topic: 8,\n  enable_llm_summary: true,\n  timeout_ms: 12000,\n  GITHUB_TOKEN: $env.GITHUB_TOKEN || \"\",\n  ZAI_API_KEY: $env.ZAI_API_KEY || \"\",\n  ZAI_BASE_URL: $env.ZAI_BASE_URL || \"https://api.z.ai/api/paas/v4\",\n  ZAI_MODEL: $env.ZAI_MODEL || \"glm-5\"\n};\n\nconst st = $getWorkflowStaticData('global');\nst.runs = (st.runs || 0) + 1;\n\nreturn [{ json: { rss_feeds, topics, config, run_id: st.runs } }];"
+      }
+    },
+    {
+      "id": "split-rss",
+      "name": "Split Out RSS",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        660,
+        240
+      ],
+      "parameters": {
+        "fieldToSplitOut": "rss_feeds",
+        "destinationFieldName": "rss_url",
+        "includeOtherFields": true
+      }
+    },
+    {
+      "id": "rss-read",
+      "name": "RSS Feed Read",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1,
+      "position": [
+        860,
+        240
+      ],
+      "parameters": {
+        "url": "={{ $json.rss_url }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "normalize-rss",
+      "name": "Normalize RSS",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1060,
+        240
+      ],
+      "parameters": {
+        "code": "const items = $input.all();\nconst output = items.flatMap(item => {\n  const feed = item.json;\n  const entries = feed.items || [];\n  return entries.map(entry => {\n    return {\n      json: {\n        source: \"rss\",\n        topic: null,\n        title: entry.title || \"Untitled\",\n        url: entry.link || entry.guid || \"\",\n        published_at: entry.pubDate || entry.isoDate || null,\n        raw_score: 5,\n        score: 5,\n        summary_raw: entry.contentSnippet || entry.description || null,\n        summary: null,\n        meta: { author: feed.title || null, venue: \"RSS Feed\", cached: false }\n      }\n    };\n  });\n});\nreturn output;"
+      }
+    },
+    {
+      "id": "split-topics",
+      "name": "Split Out Topics",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        660,
+        480
+      ],
+      "parameters": {
+        "fieldToSplitOut": "topics",
+        "destinationFieldName": "topic",
+        "includeOtherFields": true
+      }
+    },
+    {
+      "id": "cache-gate",
+      "name": "Cache Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        860,
+        480
+      ],
+      "parameters": {
+        "code": "const topic = $json.topic;\nconst config = $('Init').first().json.config;\nconst st = $getWorkflowStaticData('global');\n\nif (!st.cache) st.cache = {};\n\nconst now = Date.now();\nconst ttl_ms = config.cache_ttl_minutes * 60 * 1000;\n\n// Prune old entries\nfor (const k in st.cache) {\n  if (now - st.cache[k].ts_epoch_ms > ttl_ms) delete st.cache[k];\n}\n\nconst cached = st.cache[topic];\nif (cached && (now - cached.ts_epoch_ms < ttl_ms)) {\n  return [{ json: { topic, config, cache_hit: true, cached_items: cached.items || [] } }];\n}\n\nreturn [{ json: { topic, config, cache_hit: false, cached_items: [] } }];",
+        "jsCode": "const topic = $json.topic;\nconst config = $json.config;\nconst st = $getWorkflowStaticData('global');\nconst now = Date.now();\nst.cache = st.cache || {};\n\nconst ttl_ms = config.cache_ttl_minutes * 60 * 1000;\nconst cached = st.cache[topic];\nif (cached && (now - cached.ts_epoch_ms < ttl_ms)) {\n  cache_hit = true;\n  cached_items = cached.items;\n}\n\nreturn [{ json: { topic, config, cache_hit, cached_items } }];"
+      }
+    },
+    {
+      "id": "if-cache",
+      "name": "IF Cache Hit",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1060,
+        480
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.cache_hit }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "emit-cached",
+      "name": "Emit Cached Items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1260,
+        400
+      ],
+      "parameters": {
+        "code": "const items = $json.cached_items.map(i => ({ json: { ...i, meta: { ...i.meta, cached: true } } }));\nreturn items.length ? items : [{ json: { __skip: true } }];"
+      }
+    },
+    {
+      "id": "fetch-hn",
+      "name": "Fetch HN",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1260,
+        560
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://hn.algolia.com/api/v1/search' }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json",
+              "neverError": true
+            }
+          },
+          "timeout": 12000
+        },
+        "sendQuery": true,
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "query",
+              "value": "={{ $('Cache Gate').first().json.topic }}"
+            },
+            {
+              "name": "tags",
+              "value": "story"
+            },
+            {
+              "name": "hitsPerPage",
+              "value": "5"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "fetch-github",
+      "name": "Fetch GitHub",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1260,
+        680
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://api.github.com/search/repositories' }}",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github.v3+json"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-aegis-pulse"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ $('Cache Gate').first().json.config.GITHUB_TOKEN ? ('token ' + $('Cache Gate').first().json.config.GITHUB_TOKEN) : '' }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json",
+              "neverError": true
+            }
+          },
+          "timeout": 12000
+        },
+        "sendQuery": true,
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "q",
+              "value": "={{ $('Cache Gate').first().json.topic }}"
+            },
+            {
+              "name": "sort",
+              "value": "updated"
+            },
+            {
+              "name": "order",
+              "value": "desc"
+            },
+            {
+              "name": "per_page",
+              "value": "5"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "fetch-crossref",
+      "name": "Fetch Crossref",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1260,
+        800
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://api.crossref.org/works' }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json",
+              "neverError": true
+            }
+          },
+          "timeout": 12000
+        },
+        "sendQuery": true,
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "query",
+              "value": "={{ $('Cache Gate').first().json.topic }}"
+            },
+            {
+              "name": "rows",
+              "value": "5"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "fetch-openalex",
+      "name": "Fetch OpenAlex",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1260,
+        920
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://api.openalex.org/works' }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json",
+              "neverError": true
+            }
+          },
+          "timeout": 12000
+        },
+        "sendQuery": true,
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "search",
+              "value": "={{ $('Cache Gate').first().json.topic }}"
+            },
+            {
+              "name": "per-page",
+              "value": "5"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "norm-hn",
+      "name": "Normalize HN",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1460,
+        560
+      ],
+      "parameters": {
+        "code": "const topic = $('Cache Gate').first().json.topic;\nconst hits = $json.hits || [];\nreturn hits.map(h => {\n  return { json: {\n    source: \"hn\",\n    topic: topic,\n    title: h.title || \"\",\n    url: h.url || `https://news.ycombinator.com/item?id=${h.objectID}`,\n    published_at: h.created_at ? new Date(h.created_at).toISOString() : null,\n    raw_score: (h.points || 0) + (h.num_comments || 0),\n    score: 0,\n    summary_raw: null,\n    summary: null,\n    meta: { author: h.author, venue: \"Hacker News\", cached: false }\n  }};\n});"
+      }
+    },
+    {
+      "id": "norm-github",
+      "name": "Normalize GitHub",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1460,
+        680
+      ],
+      "parameters": {
+        "code": "const topic = $('Cache Gate').first().json.topic;\nconst items = $json.items || [];\nreturn items.map(i => {\n  return { json: {\n    source: \"github\",\n    topic: topic,\n    title: i.full_name || i.name,\n    url: i.html_url || i.url,\n    published_at: i.updated_at || i.created_at,\n    raw_score: (i.stargazers_count || 0) + (i.forks_count || 0),\n    score: 0,\n    summary_raw: i.description || null,\n    summary: null,\n    meta: { author: i.owner.login, venue: \"GitHub\", cached: false }\n  }};\n});"
+      }
+    },
+    {
+      "id": "norm-crossref",
+      "name": "Normalize Crossref",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1460,
+        800
+      ],
+      "parameters": {
+        "code": "const topic = $('Cache Gate').first().json.topic;\nconst items = ($json.message || {}).items || [];\nreturn items.map(i => {\n  return { json: {\n    source: \"crossref\",\n    topic: topic,\n    title: (i.title || [\"\"])[0],\n    url: i.URL || \"\",\n    published_at: i.created ? i.created['date-time'] : null,\n    raw_score: 20 + (i['is-referenced-by-count'] || 0),\n    score: 0,\n    summary_raw: null,\n    summary: null,\n    meta: { author: null, venue: (i['container-title'] || [\"\"])[0] || \"Crossref\", cached: false }\n  }};\n});"
+      }
+    },
+    {
+      "id": "norm-openalex",
+      "name": "Normalize OpenAlex",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1460,
+        920
+      ],
+      "parameters": {
+        "code": "const topic = $('Cache Gate').first().json.topic;\nconst items = $json.results || [];\nreturn items.map(i => {\n  const url = (i.primary_location?.source?.homepage_url) || i.id;\n  return { json: {\n    source: \"openalex\",\n    topic: topic,\n    title: i.title || \"\",\n    url: url,\n    published_at: i.publication_year ? `${i.publication_year}-01-01` : null,\n    raw_score: 15 + (i.cited_by_count || 0),\n    score: 0,\n    summary_raw: null,\n    summary: null,\n    meta: { author: null, venue: (i.primary_location?.source?.display_name) || \"OpenAlex\", cached: false }\n  }};\n});",
+        "jsCode": "const topic = $('Cache Gate').first().json.topic;\nconst items = $json.results || [];\nreturn items.map(i => {\n  const url = (i.primary_location?.source?.homepage_url) || i.id;\n  return { json: {\n    source: \"openalex\",\n    topic: topic,\n    title: i.title || \"\",\n    url: url,\n    published_at: i.publication_year ? `${i.publication_year}-01-01` : null,\n    raw_score: 15 + (i.cited_by_count || 0),\n    score: 0,\n    summary_raw: null,\n    summary: null,\n    meta: { author: null, venue: (i.primary_location?.source?.display_name) || \"OpenAlex\", cached: false }\n  }};\n});"
+      }
+    },
+    {
+      "id": "merge-1",
+      "name": "Merge HN+GitHub",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [
+        1660,
+        620
+      ],
+      "parameters": {
+        "mode": "append"
+      }
+    },
+    {
+      "id": "merge-2",
+      "name": "Merge +Crossref",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [
+        1860,
+        700
+      ],
+      "parameters": {
+        "mode": "append"
+      }
+    },
+    {
+      "id": "merge-3",
+      "name": "Merge +OpenAlex",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [
+        2060,
+        760
+      ],
+      "parameters": {
+        "mode": "append"
+      }
+    },
+    {
+      "id": "cache-save",
+      "name": "Cache Save",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2260,
+        760
+      ],
+      "parameters": {
+        "code": "const topic = $('Cache Gate').first().json.topic;\nconst items = $input.all().map(i => i.json);\nconst st = $getWorkflowStaticData('global');\nst.cache = st.cache || {};\nst.cache[topic] = { ts_epoch_ms: Date.now(), items: items };\nreturn items.map(i => ({ json: i }));"
+      }
+    },
+    {
+      "id": "merge-all",
+      "name": "Merge All Streams",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [
+        2460,
+        500
+      ],
+      "parameters": {
+        "mode": "append"
+      }
+    },
+    {
+      "id": "finalize",
+      "name": "Finalize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2660,
+        500
+      ],
+      "parameters": {
+        "code": "const init = $('Init').first().json;\nconst config = init.config;\nconst topics = init.topics;\nconst st = $getWorkflowStaticData('global');\nst.seen = st.seen || {};\n\nconst now = Date.now();\nconst dedupe_ttl_ms = config.dedupe_ttl_days * 24 * 60 * 60 * 1000;\n\n// Prune seen\nObject.keys(st.seen).forEach(k => {\n  if (now - st.seen[k] > dedupe_ttl_ms) delete st.seen[k];\n});\n\nconst items = $input.all().map(x => x.json).filter(i => !i.__skip);\nconst candidates_total = items.length;\n\n// Canonicalize URL\nconst canon = (u) => {\n  if (!u) return null;\n  try {\n    let url = new URL(u);\n    url.hostname = url.hostname.toLowerCase();\n    [...url.searchParams.keys()].filter(k => k.startsWith('utm_')).forEach(k => url.searchParams.delete(k));\n    let s = url.toString();\n    if (s.endsWith('/')) s = s.slice(0, -1);\n    return s;\n  } catch { return null; }\n};\n\nconst processed = items.filter(i => {\n  const c = canon(i.url);\n  if (!c) return false;\n  i.url = c;\n  if (st.seen[c]) return false;\n  st.seen[c] = now;\n  return true;\n});\n\n// Score\nprocessed.forEach(i => {\n  const pub = i.published_at ? new Date(i.published_at).getTime() : 0;\n  const age_hours = pub ? (now - pub) / 3600000 : 96;\n  let s = Math.max(0, i.raw_score - 0.12 * age_hours);\n  if (i.source === 'hn') s += 3;\n  if (i.source === 'github') s += 2;\n  if (i.source === 'crossref') s += 1;\n  if (i.source === 'openalex') s += 1;\n  i.score = s;\n});\n\nconst filtered = processed.filter(i => i.score >= config.min_score).sort((a,b) => b.score - a.score);\n\n// Diversity Caps\nconst sourceCounts = {};\nconst topicCounts = {};\nconst final = [];\nfor (const i of filtered) {\n  const sc = (sourceCounts[i.source] || 0);\n  const tc = (topicCounts[i.topic] || 0);\n  if (sc >= config.max_per_source || tc >= config.max_per_topic) continue;\n  final.push(i);\n  sourceCounts[i.source] = sc + 1;\n  topicCounts[i.topic] = tc + 1;\n  if (final.length >= config.max_items_total) break;\n}\n\nconst stats = {\n  candidates_total,\n  final_items: final.length,\n  cached_items_count: final.filter(i => i.meta.cached).length,\n  cache_miss_topics_count: (() => {\n    let count = 0;\n    try {\n      const gateItems = $('Cache Gate').all();\n      for (const item of gateItems) {\n        if (item.json.cache_hit === false) count++;\n      }\n    } catch(e) {}\n    return count;\n  })(),\n  api_calls_estimate: 4 * cache_miss_topics_count,\n  by_source: {}\n};\nfinal.forEach(i => stats.by_source[i.source] = (stats.by_source[i.source] || 0) + 1);\n\nreturn [{ json: {\n  config,\n  topics,\n  stats,\n  items: final,\n  run_id: $('Init').first().json.st_runs || 0,\n  generated_at: new Date().toISOString()\n}}];"
+      }
+    },
+    {
+      "id": "if-llm",
+      "name": "IF LLM",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2860,
+        500
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.config.enable_llm_summary }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            },
+            {
+              "leftValue": "={{ $json.config.ZAI_API_KEY }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "isNotEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "prepare-llm",
+      "name": "Prepare LLM",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3060,
+        400
+      ],
+      "parameters": {
+        "code": "const data = $input.first().json;\nconst top = data.items.slice(0, 12);\nconst list = top.map(i => `- URL: ${i.url}\\n  Title: ${i.title}\\n  Source: ${i.source}\\n  Topic: ${i.topic || 'N/A'}\\n  Score: ${i.score.toFixed(1)}`).join('\\n');\nreturn [{ json: {\n  __baseData: data,\n  llm_body: {\n    messages: [{\n      role: \"user\",\n      content: `Analyze these items and return ONLY JSON:\\n${list}\\n\\nRequired JSON format:\\n{\"summaries\":[{\"url\":\"...\",\"summary\":\"1 sentence\",\"tags\":[\"t1\",\"t2\"]}]}`\n    }]\n  }\n}}];"
+      }
+    },
+    {
+      "id": "llm-http",
+      "name": "LLM HTTP",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3260,
+        400
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.__baseData.config.ZAI_BASE_URL + '/chat/completions' }}",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $json.__baseData.config.ZAI_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json",
+              "neverError": true
+            }
+          },
+          "timeout": 12000
+        },
+        "specifyBody": "json",
+        "jsonBody": "={{ ({ model: $json.__baseData.config.ZAI_MODEL, messages: $json.llm_body.messages, response_format: { type: 'json_object' }, temperature: 0.2 }) }}"
+      }
+    },
+    {
+      "id": "apply-summaries",
+      "name": "Apply Summaries",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3460,
+        400
+      ],
+      "parameters": {
+        "code": "const base = $('Prepare LLM').first().json.__baseData;\nconst resp = $input.first().json;\nlet summaries = [];\ntry {\n  const content = resp.choices?.[0]?.message?.content;\n  if (content) summaries = JSON.parse(content).summaries || [];\n  else if (resp.summaries) summaries = resp.summaries;\n} catch (e) {}\n\nconst map = {};\nsummaries.forEach(s => map[s.url] = s);\nconst items = base.items.map(i => {\n  const s = map[i.url] || {};\n  return { ...i, summary: s.summary || i.summary_raw || i.title, tags: s.tags || [] };\n});\nreturn [{ json: { ...base, items } }];"
+      }
+    },
+    {
+      "id": "fallback",
+      "name": "Fallback Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3060,
+        600
+      ],
+      "parameters": {
+        "code": "const data = $input.first().json;\nconst items = data.items.map(i => ({\n  ...i,\n  summary: i.summary_raw || i.title,\n  tags: []\n}));\nreturn [{ json: { ...data, items } }];"
+      }
+    },
+    {
+      "id": "qa-lint",
+      "name": "QA Lint",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3660,
+        500
+      ],
+      "parameters": {
+        "code": "const data = $input.first().json;\nif (!data.items || !Array.isArray(data.items)) throw new Error('Invalid items');\nfor (const i of data.items) {\n  if (typeof i.url !== 'string' || !i.url) throw new Error('Missing URL');\n  if (typeof i.score !== 'number') throw new Error('Invalid score');\n}\nconst str = JSON.stringify(data);\nif (str.includes('{{')) throw new Error('Template detected');\nreturn [{ json: data }];"
+      }
+    },
+    {
+      "id": "build-final",
+      "name": "Build Final",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3860,
+        500
+      ],
+      "parameters": {
+        "code": "const data = $input.first().json;\nconst groups = {};\ndata.items.forEach(i => {\n  const s = i.source || 'unknown';\n  const t = i.topic || 'general';\n  groups[s] = groups[s] || {};\n  groups[s][t] = groups[s][t] || [];\n  groups[s][t].push(i);\n});\n\nlet md = `# AegisPulse Briefing\\n\\n`;\nObject.keys(groups).sort().forEach(s => {\n  md += `## ${s.toUpperCase()}\\n`;\n  Object.keys(groups[s]).sort().forEach(t => {\n    md += `### ${t}\\n`;\n    groups[s][t].forEach(i => {\n      md += `- [${i.score.toFixed(1)}] [${i.title}](${i.url})\\n  ${i.summary}\\n\\n`;\n    });\n  });\n});\n\nreturn [{ json: {\n  run_id: data.run_id,\n  generated_at: data.generated_at,\n  topics: data.topics,\n  stats: data.stats,\n  items: data.items,\n  digest_markdown: md\n}}];"
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Init",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Init",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Init": {
+      "main": [
+        [
+          {
+            "node": "Split Out RSS",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Split Out Topics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Out RSS": {
+      "main": [
+        [
+          {
+            "node": "RSS Feed Read",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RSS Feed Read": {
+      "main": [
+        [
+          {
+            "node": "Normalize RSS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize RSS": {
+      "main": [
+        [
+          {
+            "node": "Merge All Streams",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Out Topics": {
+      "main": [
+        [
+          {
+            "node": "Cache Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cache Gate": {
+      "main": [
+        [
+          {
+            "node": "IF Cache Hit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Cache Hit": {
+      "main": [
+        [
+          {
+            "node": "Emit Cached Items",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fetch HN",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch GitHub",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Crossref",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch OpenAlex",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Emit Cached Items": {
+      "main": [
+        [
+          {
+            "node": "Merge All Streams",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Fetch HN": {
+      "main": [
+        [
+          {
+            "node": "Normalize HN",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch GitHub": {
+      "main": [
+        [
+          {
+            "node": "Normalize GitHub",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Crossref": {
+      "main": [
+        [
+          {
+            "node": "Normalize Crossref",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch OpenAlex": {
+      "main": [
+        [
+          {
+            "node": "Normalize OpenAlex",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize HN": {
+      "main": [
+        [
+          {
+            "node": "Merge HN+GitHub",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize GitHub": {
+      "main": [
+        [
+          {
+            "node": "Merge HN+GitHub",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge HN+GitHub": {
+      "main": [
+        [
+          {
+            "node": "Merge +Crossref",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Crossref": {
+      "main": [
+        [
+          {
+            "node": "Merge +Crossref",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge +Crossref": {
+      "main": [
+        [
+          {
+            "node": "Merge +OpenAlex",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize OpenAlex": {
+      "main": [
+        [
+          {
+            "node": "Merge +OpenAlex",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge +OpenAlex": {
+      "main": [
+        [
+          {
+            "node": "Cache Save",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cache Save": {
+      "main": [
+        [
+          {
+            "node": "Merge All Streams",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge All Streams": {
+      "main": [
+        [
+          {
+            "node": "Finalize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize": {
+      "main": [
+        [
+          {
+            "node": "IF LLM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF LLM": {
+      "main": [
+        [
+          {
+            "node": "Prepare LLM",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fallback Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare LLM": {
+      "main": [
+        [
+          {
+            "node": "LLM HTTP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM HTTP": {
+      "main": [
+        [
+          {
+            "node": "Apply Summaries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply Summaries": {
+      "main": [
+        [
+          {
+            "node": "QA Lint",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fallback Summary": {
+      "main": [
+        [
+          {
+            "node": "QA Lint",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "QA Lint": {
+      "main": [
+        [
+          {
+            "node": "Build Final",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

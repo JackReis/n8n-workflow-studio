@@ -1,0 +1,42 @@
+{
+  "name": "PulseMosaic-v1.1-Error",
+  "nodes": [
+    {
+      "id": "c1-001",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "parameters": {}
+    },
+    {
+      "id": "c1-002",
+      "name": "Normalize Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300],
+      "parameters": {
+        "jsCode": "const err = $input.first().json;\nreturn [{\n  json: {\n    time: new Date().toISOString(),\n    workflow_name: err.workflow?.name || err.workflow?.id || null,\n    workflow_id: err.workflow?.id || null,\n    node_name: err.execution?.node || null,\n    message: err.message || 'Unknown error',\n    execution_id: err.execution?.id || null,\n    error_type: err.errorType || null,\n    stack: err.stack || null\n  }\n}];"
+      }
+    },
+    {
+      "id": "c1-003",
+      "name": "HTTP Post",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "https://httpbin.org/post",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "options": { "continueOnFail": true }
+      }
+    }
+  ],
+  "connections": {
+    "Error Trigger": { "main": [[{ "node": "Normalize Error", "type": "main", "index": 0 }]] },
+    "Normalize Error": { "main": [[{ "node": "HTTP Post", "type": "main", "index": 0 }]] }
+  }
+}

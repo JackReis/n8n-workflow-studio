@@ -1,0 +1,48 @@
+{
+  "name": "SignalForge-v4.1-Error",
+  "nodes": [
+    {
+      "id": "c1b2c3d4-0000-4000-8000-000000000001",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "parameters": {}
+    },
+    {
+      "id": "c1b2c3d4-0000-4000-8000-000000000002",
+      "name": "Normalize Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 300],
+      "parameters": {
+        "jsCode": "const err = $input.first().json;\nreturn [{\n  json: {\n    time: new Date().toISOString(),\n    workflow_name: err.workflow?.name || err.workflow?.id || null,\n    workflow_id: err.workflow?.id || null,\n    node_name: err.execution?.node || null,\n    message: err.message || 'Unknown error',\n    execution_id: err.execution?.id || null,\n    error_type: err.errorType || null,\n    stack: err.stack || null\n  }\n}];"
+      }
+    },
+    {
+      "id": "c1b2c3d4-0000-4000-8000-000000000003",
+      "name": "HTTP Request",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [640, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "https://httpbin.org/post",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "options": {
+          "continueOnFail": true
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [[{"node": "Normalize Error", "type": "main", "index": 0}]]
+    },
+    "Normalize Error": {
+      "main": [[{"node": "HTTP Request", "type": "main", "index": 0}]]
+    }
+  }
+}
