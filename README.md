@@ -289,7 +289,7 @@ MIT
 
 ## Author
 
-[Tuncer Timur](https://github.com/turtir-ai) - Security Researcher & Workflow Automation Specialist
+[TT](https://github.com/turtir-ai) - Security Researcher & Workflow Automation Specialist
 
 ## Acknowledgments
 
